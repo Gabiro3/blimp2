@@ -10,10 +10,13 @@ from typing import Optional, Dict, Any, List
 import logging
 import uuid
 from datetime import datetime
+from dotenv import load_dotenv
 
 from services.gemini_service import GeminiService
 from services.supabase_service import SupabaseService
 from orchestrator import WorkflowOrchestrator
+
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
