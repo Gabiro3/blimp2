@@ -11,6 +11,7 @@ import logging
 import uuid
 from datetime import datetime
 from dotenv import load_dotenv
+import os
 
 from services.gemini_service import GeminiService
 from services.supabase_service import SupabaseService
@@ -33,9 +34,11 @@ app = FastAPI(
 )
 
 # CORS middleware
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "")
+allowed_origins = [origin.strip() for origin in allowed_origins.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=allowed_origins,  # Configure appropriately for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
