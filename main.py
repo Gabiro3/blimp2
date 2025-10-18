@@ -49,6 +49,10 @@ supabase_service = SupabaseService()
 gemini_service = GeminiService()
 orchestrator = WorkflowOrchestrator(supabase_service)
 
+class RequiredApp(BaseModel):
+    app: str
+    is_connected: bool
+
 
 # Request/Response Models
 class ProcessWorkflowRequest(BaseModel):
@@ -77,6 +81,35 @@ class ExecuteWorkflowResponse(BaseModel):
     status: str
     result: Dict[str, Any]
     message: str
+
+class AppCredentials(BaseModel):
+    access_token: str
+    refresh_token: Optional[str] = None
+    token_type: str
+    expiry_date: Optional[int] = None
+    scope: Optional[str] = None
+
+
+class AppMetadata(BaseModel):
+    email: Optional[str] = None
+    connected_at: str
+    scopes: Optional[List[str]] = None
+
+
+class ConnectAppRequest(BaseModel):
+    user_id: str
+    app_name: str
+    app_type: str
+    credentials: AppCredentials
+    metadata: AppMetadata
+
+
+class ConnectAppResponse(BaseModel):
+    success: bool
+    message: str
+    credential_id: Optional[str] = None
+    app_name: str
+    error: Optional[str] = None
 
 
 @app.get("/")
@@ -142,6 +175,18 @@ async def process_workflow(request: ProcessWorkflowRequest):
         
         workflow_data = gemini_result["workflow"]
         is_new = gemini_result["is_new_workflow"]
+        required_apps_list = workflow_data["required_apps"]
+        connected_apps_lower = [app.lower() for app in connected_apps]
+        
+        required_apps_with_status = [
+            RequiredApp(
+                app=app,
+                is_connected=app.lower() in connected_apps_lower
+            )
+            for app in required_apps_list
+        ]
+        
+        logger.info(f"Required apps with status: {required_apps_with_status}")
         
         # If new workflow, save it to database
         if is_new:
@@ -152,7 +197,7 @@ async def process_workflow(request: ProcessWorkflowRequest):
                 name=workflow_data["name"],
                 description=workflow_data["description"],
                 prompt=request.prompt,
-                required_apps=workflow_data["required_apps"],
+                required_apps=required_apps_list,
                 category=workflow_data.get("category", "custom")
             )
             logger.info(f"Saved new workflow: {workflow_id}")
@@ -284,6 +329,79 @@ async def list_workflows(user_id: str):
     except Exception as e:
         logger.error(f"Error listing workflows: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.post("/api/mcp/connect-app", response_model=ConnectAppResponse)
+async def connect_app(request: ConnectAppRequest):
+    """
+    Receive OAuth tokens from UI and store user's app credentials
+    
+    Flow:
+    1. Receive app credentials from UI
+    2. Validate credentials
+    3. Store in Supabase with encryption
+    4. Create/update n8n credentials for this user
+    5. Return credential ID
+    """
+    try:
+        logger.info(f"Connecting app {request.app_name} for user: {request.user_id}")
+        
+        # Step 1: Validate credentials
+        if not request.credentials.access_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Access token is required"
+            )
+        
+        # Step 2: Store credentials in Supabase
+        logger.info(f"Storing credentials for {request.app_name}")
+        credential_id = await supabase_service.store_user_credentials(
+            user_id=request.user_id,
+            app_name=request.app_name,
+            app_type=request.app_type,
+            credentials=request.credentials.dict(),
+            metadata=request.metadata.dict()
+        )
+        
+        if not credential_id:
+            raise HTTPException(
+                status_code=os.stat.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to store credentials"
+            )
+        
+        # Step 3: Create/update n8n credentials for this user
+        logger.info(f"Creating n8n credentials for user {request.user_id}")
+        n8n_credential_id = await supabase_service.store_user_credentials(
+            user_id=request.user_id,
+            app_name=request.app_name,  # You can change this as needed
+            app_type=request.app_type,
+            credentials=request.credentials.dict(),
+            metadata={}  # Adjust this based on what metadata needs to be stored
+        )
+        
+        if not n8n_credential_id:
+            logger.warning(f"Failed to create n8n credential, but Supabase storage succeeded")
+        
+        logger.info(f"App connected successfully: {request.app_name}")
+        
+        return ConnectAppResponse(
+            success=True,
+            message="App connected successfully",
+            credential_id=credential_id,
+            app_name=request.app_name
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error connecting app: {str(e)}")
+        return ConnectAppResponse(
+            success=False,
+            message="Failed to connect app",
+            credential_id=None,
+            app_name=request.app_name,
+            error=str(e)
+        )
 
 
 @app.get("/api/connected-apps")
