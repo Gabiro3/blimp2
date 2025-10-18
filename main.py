@@ -159,6 +159,8 @@ async def process_workflow(request: ProcessWorkflowRequest):
         else:
             workflow_id = workflow_data["id"]
             logger.info(f"Using existing workflow: {workflow_id}")
+        print(workflow_data)
+        print(workflow_id)
         
         return ProcessWorkflowResponse(
             workflow_id=workflow_id,
