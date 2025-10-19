@@ -1,0 +1,4 @@
+.env
+blimp_venv/
+__pycache__/
+*.pyc

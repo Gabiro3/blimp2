@@ -50,7 +50,7 @@ gemini_service = GeminiService()
 orchestrator = WorkflowOrchestrator(supabase_service)
 
 class RequiredApp(BaseModel):
-    app: str
+    app_name: str
     is_connected: bool
 
 
@@ -61,11 +61,12 @@ class ProcessWorkflowRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
 
 
+
 class ProcessWorkflowResponse(BaseModel):
     workflow_id: str
     workflow_name: str
     workflow_description: str
-    required_apps: List[str]
+    required_apps: List[RequiredApp]  # <- change from List[str] to List[RequiredApp]
     is_new_workflow: bool
     message: str
 
@@ -179,12 +180,12 @@ async def process_workflow(request: ProcessWorkflowRequest):
         connected_apps_lower = [app.lower() for app in connected_apps]
         
         required_apps_with_status = [
-            RequiredApp(
-                app=app,
-                is_connected=app.lower() in connected_apps_lower
-            )
-            for app in required_apps_list
-        ]
+    {
+        "app_name": app,
+        "is_connected": app.lower() in connected_apps_lower
+    }
+    for app in required_apps_list
+]
         
         logger.info(f"Required apps with status: {required_apps_with_status}")
         
@@ -197,21 +198,19 @@ async def process_workflow(request: ProcessWorkflowRequest):
                 name=workflow_data["name"],
                 description=workflow_data["description"],
                 prompt=request.prompt,
-                required_apps=required_apps_list,
+                required_apps=required_apps_with_status,
                 category=workflow_data.get("category", "custom")
             )
             logger.info(f"Saved new workflow: {workflow_id}")
         else:
             workflow_id = workflow_data["id"]
             logger.info(f"Using existing workflow: {workflow_id}")
-        print(workflow_data)
-        print(workflow_id)
         
         return ProcessWorkflowResponse(
             workflow_id=workflow_id,
             workflow_name=workflow_data["name"],
             workflow_description=workflow_data["description"],
-            required_apps=workflow_data["required_apps"],
+            required_apps=required_apps_with_status,
             is_new_workflow=is_new,
             message="Workflow processed successfully. Please connect the required apps to execute."
         )
@@ -257,7 +256,7 @@ async def execute_workflow(request: ExecuteWorkflowRequest):
         missing_apps = [app for app in required_apps if app.lower() not in [a.lower() for a in connected_apps]]
         if missing_apps:
             raise HTTPException(
-                status_code=400,
+                status_code=404,
                 detail=f"Missing required app connections: {', '.join(missing_apps)}"
             )
         
@@ -349,7 +348,7 @@ async def connect_app(request: ConnectAppRequest):
         # Step 1: Validate credentials
         if not request.credentials.access_token:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=404,
                 detail="Access token is required"
             )
         
@@ -421,4 +420,4 @@ async def get_connected_apps(user_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)

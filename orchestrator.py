@@ -104,9 +104,9 @@ class WorkflowOrchestrator:
         apps_set = set(apps)
         
         # Check for known combinations
-        if {"gmail", "gcalendar"}.issubset(apps_set):
+        if {"gmail", "google calendar"}.issubset(apps_set):
             return "gmail_calendar"
-        elif {"gmail", "gdrive"}.issubset(apps_set):
+        elif {"gmail", "google drive"}.issubset(apps_set):
             return "gmail_gdrive"
         
         # Add more combinations as needed

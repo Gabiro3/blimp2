@@ -4,9 +4,11 @@ Inter-app connector for automating email to calendar workflows
 """
 
 import logging
+import os
 from typing import Dict, Any, List
 from datetime import datetime, timedelta
 import re
+import requests
 
 from helpers.gmail_helpers import GmailHelpers
 from helpers.gcalendar_helpers import GCalendarHelpers
@@ -19,21 +21,86 @@ class GmailCalendarUtils:
     
     def __init__(self, credentials: Dict[str, Any]):
         """
-        Initialize with user credentials
-        
+        Initialize with user credentials.
+        Refresh expired tokens before use.
+
         Args:
             credentials: Dict mapping app_type to credentials
         """
-        self.gmail_creds = credentials.get("gmail", {}).get("credentials", {})
-        self.calendar_creds = credentials.get("gcalendar", {}).get("credentials", {})
-        
+        print(credentials)
+        self.credentials = credentials
+        self.gmail_creds = self._check_and_refresh("gmail")
+        self.calendar_creds = self._check_and_refresh("calendar")
+
         self.gmail_token = self.gmail_creds.get("access_token")
         self.calendar_token = self.calendar_creds.get("access_token")
-        
+
         if not self.gmail_token or not self.calendar_token:
-            raise ValueError("Missing Gmail or Calendar credentials")
-        
-        logger.info("GmailCalendarUtils initialized")
+            raise ValueError("Missing Gmail or Calendar access tokens after refresh.")
+
+        logger.info("GmailCalendarUtils initialized with valid credentials.")
+
+    def _check_and_refresh(self, app_type: str) -> Dict[str, Any]:
+        """
+        Checks if credentials for an app have expired and refreshes them if necessary.
+
+        Args:
+            app_type: "gmail" or "calendar"
+
+        Returns:
+            Updated credentials dict with valid access_token
+        """
+        app_data = self.credentials.get(app_type, {})
+        creds = app_data.get("credentials", {})
+
+        expiry_raw = creds.get("expiry_date")
+        refresh_token = creds.get("refresh_token")
+
+        if not refresh_token:
+            raise ValueError(f"No refresh token available for {app_type}.")
+
+        # Convert expiry_date to datetime
+        if isinstance(expiry_raw, str):
+            expiry_dt = datetime.fromisoformat(expiry_raw)
+        else:
+            # Assume it's a timestamp in ms
+            expiry_dt = datetime.fromtimestamp(int(expiry_raw) / 1000)
+
+        now = datetime.utcnow()
+
+        if expiry_dt <= now:
+            logger.info(f"{app_type.capitalize()} token expired. Refreshing...")
+
+            payload = {
+                "client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            }
+
+            response = requests.post("https://oauth2.googleapis.com/token", data=payload)
+            if response.status_code != 200:
+                logger.error(f"Failed to refresh token for {app_type}: {response.text}")
+                raise ValueError(f"Failed to refresh token for {app_type}")
+
+            token_data = response.json()
+            new_access_token = token_data["access_token"]
+            expires_in = token_data.get("expires_in", 3600)  # Default to 1 hour
+            new_expiry = now + timedelta(seconds=expires_in)
+
+            # Update and return the refreshed credentials
+            updated_creds = {
+                **creds,
+                "access_token": new_access_token,
+                "expiry_date": new_expiry.isoformat(),  # Keep it in string form
+            }
+
+            self.credentials[app_type]["credentials"] = updated_creds
+            logger.info(f"{app_type.capitalize()} token refreshed successfully.")
+            return updated_creds
+
+        logger.info(f"{app_type.capitalize()} token is still valid.")
+        return creds
     
     async def emails_to_calendar_events(
         self,
