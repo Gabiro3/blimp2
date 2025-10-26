@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 from dotenv import load_dotenv
 import os
+import json
 
 from services.gemini_service import GeminiService
 from services.supabase_service import SupabaseService
@@ -81,6 +82,22 @@ class ExecuteWorkflowResponse(BaseModel):
     execution_id: str
     status: str
     result: Dict[str, Any]
+    message: str
+
+class ExecuteCustomWorkflowRequest(BaseModel):
+    user_id: str
+    workflow_id: str
+    workflow_title: str
+    workflow_json: str  # JSON string containing steps and n8n_workflow
+    parameters: Optional[Dict[str, Any]] = None
+
+
+class ExecuteCustomWorkflowResponse(BaseModel):
+    execution_id: str
+    status: str
+    result: Dict[str, Any]
+    workflow_type: str
+    apps_used: List[str]
     message: str
 
 class AppCredentials(BaseModel):
@@ -177,12 +194,12 @@ async def process_workflow(request: ProcessWorkflowRequest):
         workflow_data = gemini_result["workflow"]
         is_new = gemini_result["is_new_workflow"]
         required_apps_list = workflow_data["required_apps"]
-        connected_apps_lower = [app.lower() for app in connected_apps]
+        logger.info(f"Required apps: {required_apps_list}")
         
         required_apps_with_status = [
     {
         "app_name": app,
-        "is_connected": app.lower() in connected_apps_lower
+        "is_connected": app in connected_apps
     }
     for app in required_apps_list
 ]
@@ -253,7 +270,7 @@ async def execute_workflow(request: ExecuteWorkflowRequest):
         connected_apps = await supabase_service.get_user_connected_apps(request.user_id)
         required_apps = workflow.get("required_apps", [])
         
-        missing_apps = [app for app in required_apps if app.lower() not in [a.lower() for a in connected_apps]]
+        missing_apps = [app for app in required_apps if app not in [a for a in connected_apps]]
         if missing_apps:
             raise HTTPException(
                 status_code=404,
@@ -313,6 +330,137 @@ async def execute_workflow(request: ExecuteWorkflowRequest):
     except Exception as e:
         logger.error(f"Error executing workflow: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.post("/api/execute-custom-workflow", response_model=ExecuteCustomWorkflowResponse)
+async def execute_custom_workflow(request: ExecuteCustomWorkflowRequest):
+    logger.info("Request made %s", request)
+    """
+    Execute a custom workflow immediately without processing through Gemini
+    
+    Flow:
+    1. Parse workflow_json to extract steps and app types
+    2. Determine workflow type based on app combinations
+    3. Verify user has connected required apps
+    4. Get user credentials for required apps
+    5. Execute workflow using orchestrator
+    6. Return results to user
+    """
+    try:
+        logger.info(f"Executing custom workflow '{request.workflow_title}' for user {request.user_id}")
+        
+        # Parse workflow_json
+        try:
+            workflow_data = json.loads(request.workflow_json)
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid workflow_json format: {str(e)}"
+            )
+        
+        # Extract steps from workflow data
+        steps = workflow_data.get("steps", [])
+        if not steps:
+            raise HTTPException(
+                status_code=400,
+                detail="No steps found in workflow_json"
+            )
+        
+        # Extract app types (excluding Trigger)
+        app_types = []
+        for step in steps:
+            app_type = step.get("app_type", "")
+            if app_type and app_type.lower() != "trigger":
+                app_types.append(app_type)
+        
+        if len(app_types) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="Workflow must have at least 2 apps (excluding Trigger)"
+            )
+        
+        logger.info(f"Detected apps in workflow: {app_types}")
+        
+        # Determine workflow type based on app combination
+        workflow_type = None
+        app_types_lower = [app.lower() for app in app_types]
+        
+        # Map app combinations to workflow types
+        if "gmail" in app_types_lower and "google calendar" in app_types_lower:
+            workflow_type = "gmail_to_calendar"
+        elif "gmail" in app_types_lower and "google drive" in app_types_lower:
+            workflow_type = "gmail_to_gdrive"
+        elif "notion" in app_types_lower and "slack" in app_types_lower:
+            workflow_type = "notion_to_slack"
+        elif "notion" in app_types_lower and "gmail" in app_types_lower:
+            workflow_type = "notion_to_gmail"
+        elif "notion" in app_types_lower and "discord" in app_types_lower:
+            workflow_type = "notion_to_discord"
+        elif "google calendar" in app_types_lower and "slack" in app_types_lower:
+            workflow_type = "gcalendar_to_slack"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported app combination: {', '.join(app_types)}"
+            )
+        
+        logger.info(f"Determined workflow type: {workflow_type}")
+        
+        # Verify user has connected required apps
+        connected_apps = await supabase_service.get_user_connected_apps(request.user_id)
+        connected_apps_lower = [app.lower() for app in connected_apps]
+        
+        missing_apps = [app for app in app_types if app.lower() not in connected_apps_lower]
+        if missing_apps:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing required app connections: {', '.join(missing_apps)}"
+            )
+        
+        # Get user credentials for the required apps
+        # Get user credentials for workflow
+        credentials = await supabase_service.get_user_workflow_credentials(
+            user_id=request.user_id,
+            workflow_id=request.workflow_id)
+        
+        # Generate execution ID
+        execution_id = str(uuid.uuid4())
+        
+        # Create workflow object for orchestrator
+        workflow = {
+            "id": execution_id,
+            "name": request.workflow_title,
+            "description": f"Custom workflow: {request.workflow_title}",
+            "type": workflow_type,
+            "required_apps": app_types,
+            "steps": steps
+        }
+        
+        # Execute workflow using orchestrator
+        result = await orchestrator.execute_workflow(
+            workflow=workflow,
+            credentials=credentials,
+            parameters=request.parameters or {}
+        )
+        
+        status = "completed" if result.get("success") else "failed"
+        
+        logger.info(f"Custom workflow execution {execution_id} {status}")
+        
+        return ExecuteCustomWorkflowResponse(
+            execution_id=execution_id,
+            status=status,
+            result=result,
+            workflow_type=workflow_type,
+            apps_used=app_types,
+            message=f"Custom workflow executed successfully" if result.get("success") else f"Custom workflow execution failed: {result.get('error')}"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error executing custom workflow: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/workflows")
@@ -364,7 +512,7 @@ async def connect_app(request: ConnectAppRequest):
         
         if not credential_id:
             raise HTTPException(
-                status_code=os.stat.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=500,
                 detail="Failed to store credentials"
             )
         

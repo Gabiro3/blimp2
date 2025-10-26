@@ -17,80 +17,110 @@ logger = logging.getLogger(__name__)
 
 class GmailHelpers:
     """Helper class for Gmail operations."""
-    
+
     @staticmethod
-    def _get_service(access_token: str):
-        """Create Gmail API service with access token."""
-        credentials = Credentials(token=access_token)
+    def _get_service(credentials_dict: Dict[str, Any]):
+        """
+        Create Gmail API service with credentials.
+        
+        Args:
+            credentials_dict: Full OAuth credentials dictionary containing:
+                - access_token
+                - refresh_token
+                - token_uri
+                - client_id
+                - client_secret
+        """
+        credentials = Credentials(
+            token=credentials_dict.get("access_token"),
+            refresh_token=credentials_dict.get("refresh_token"),
+            token_uri=credentials_dict.get("token_uri"),
+            client_id=credentials_dict.get("client_id"),
+            client_secret=credentials_dict.get("client_secret")
+        )
         return build('gmail', 'v1', credentials=credentials)
-    
+
     @staticmethod
     async def list_messages(
         access_token: str,
         query: str = "",
-        max_results: int = 10,
-        label_ids: Optional[List[str]] = None
+        max_results: int = 50,
+        label_ids: Optional[List[str]] = None,
+        credentials: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        List Gmail messages.
-        
+        List Gmail messages, handling pagination and returning all IDs that match.
+
         Args:
-            access_token: User's Gmail access token
-            query: Gmail search query (e.g., "is:unread", "from:example@gmail.com")
-            max_results: Maximum number of messages to return
-            label_ids: List of label IDs to filter by
-            
+            access_token: User's Gmail access token (deprecated, use credentials)
+            query: Search query string
+            max_results: Maximum number of results to return
+            label_ids: Optional list of label IDs to filter by
+            credentials: Full OAuth credentials dictionary (preferred)
+
         Returns:
-            Dict with messages list and metadata
+            Dict containing success status and message list
         """
         try:
-            service = GmailHelpers._get_service(access_token)
-            
+            service = (GmailHelpers._get_service(credentials) if credentials 
+                      else GmailHelpers._get_service({"access_token": access_token}))
+
             params = {
-                'userId': 'me',
-                'maxResults': max_results
+                "userId": "me",
+                "q": query,
+                "maxResults": min(max_results, 100)
             }
-            
-            if query:
-                params['q'] = query
+
             if label_ids:
-                params['labelIds'] = label_ids
-            
+                params["labelIds"] = label_ids
+
+            messages = []
             results = service.users().messages().list(**params).execute()
-            messages = results.get('messages', [])
-            
+
+            while True:
+                msgs = results.get("messages", [])
+                messages.extend(msgs)
+
+                if "nextPageToken" not in results or len(messages) >= max_results:
+                    break
+
+                params["pageToken"] = results["nextPageToken"]
+                results = service.users().messages().list(**params).execute()
+
             return {
                 "success": True,
-                "messages": messages,
-                "result_size_estimate": results.get('resultSizeEstimate', 0)
+                "messages": messages[:max_results],
+                "result_size_estimate": len(messages)
             }
-            
+
         except HttpError as error:
             logger.error(f"Gmail API error listing messages: {error}")
-            return {
-                "success": False,
-                "error": str(error)
-            }
-    
+            return {"success": False, "error": str(error)}
+
     @staticmethod
     async def get_message(
         access_token: str,
         message_id: str,
-        format: str = "full"
+        format: str = "full",
+        credentials: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Get a specific Gmail message.
         
         Args:
-            access_token: User's Gmail access token
+            access_token: User's Gmail access token (deprecated, use credentials)
             message_id: ID of the message to retrieve
             format: Format of the message (full, metadata, minimal, raw)
+            credentials: Full OAuth credentials dictionary (preferred)
             
         Returns:
             Dict with message data
         """
         try:
-            service = GmailHelpers._get_service(access_token)
+            if credentials:
+                service = GmailHelpers._get_service(credentials)
+            else:
+                service = GmailHelpers._get_service({"access_token": access_token})
             
             message = service.users().messages().get(
                 userId='me',
@@ -119,25 +149,30 @@ class GmailHelpers:
         body: str,
         cc: Optional[str] = None,
         bcc: Optional[str] = None,
-        html: bool = False
+        html: bool = False,
+        credentials: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Send a Gmail message.
         
         Args:
-            access_token: User's Gmail access token
+            access_token: User's Gmail access token (deprecated, use credentials)
             to: Recipient email address
             subject: Email subject
             body: Email body content
             cc: CC recipients (comma-separated)
             bcc: BCC recipients (comma-separated)
             html: Whether body is HTML
+            credentials: Full OAuth credentials dictionary (preferred)
             
         Returns:
             Dict with sent message data
         """
         try:
-            service = GmailHelpers._get_service(access_token)
+            if credentials:
+                service = GmailHelpers._get_service(credentials)
+            else:
+                service = GmailHelpers._get_service({"access_token": access_token})
             
             message = MIMEMultipart() if html else MIMEText(body)
             message['to'] = to
@@ -173,20 +208,25 @@ class GmailHelpers:
     @staticmethod
     async def delete_message(
         access_token: str,
-        message_id: str
+        message_id: str,
+        credentials: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Delete a Gmail message.
         
         Args:
-            access_token: User's Gmail access token
+            access_token: User's Gmail access token (deprecated, use credentials)
             message_id: ID of the message to delete
+            credentials: Full OAuth credentials dictionary (preferred)
             
         Returns:
             Dict with success status
         """
         try:
-            service = GmailHelpers._get_service(access_token)
+            if credentials:
+                service = GmailHelpers._get_service(credentials)
+            else:
+                service = GmailHelpers._get_service({"access_token": access_token})
             
             service.users().messages().delete(
                 userId='me',
@@ -210,22 +250,27 @@ class GmailHelpers:
         access_token: str,
         message_id: str,
         add_label_ids: Optional[List[str]] = None,
-        remove_label_ids: Optional[List[str]] = None
+        remove_label_ids: Optional[List[str]] = None,
+        credentials: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Modify Gmail message labels (mark as read/unread, archive, etc.).
         
         Args:
-            access_token: User's Gmail access token
+            access_token: User's Gmail access token (deprecated, use credentials)
             message_id: ID of the message to modify
             add_label_ids: Label IDs to add
             remove_label_ids: Label IDs to remove
+            credentials: Full OAuth credentials dictionary (preferred)
             
         Returns:
             Dict with modified message data
         """
         try:
-            service = GmailHelpers._get_service(access_token)
+            if credentials:
+                service = GmailHelpers._get_service(credentials)
+            else:
+                service = GmailHelpers._get_service({"access_token": access_token})
             
             body = {}
             if add_label_ids:
@@ -257,23 +302,28 @@ class GmailHelpers:
         to: str,
         subject: str,
         body: str,
-        html: bool = False
+        html: bool = False,
+        credentials: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Create a Gmail draft.
         
         Args:
-            access_token: User's Gmail access token
+            access_token: User's Gmail access token (deprecated, use credentials)
             to: Recipient email address
             subject: Email subject
             body: Email body content
             html: Whether body is HTML
+            credentials: Full OAuth credentials dictionary (preferred)
             
         Returns:
             Dict with draft data
         """
         try:
-            service = GmailHelpers._get_service(access_token)
+            if credentials:
+                service = GmailHelpers._get_service(credentials)
+            else:
+                service = GmailHelpers._get_service({"access_token": access_token})
             
             message = MIMEText(body, 'html' if html else 'plain')
             message['to'] = to
@@ -293,6 +343,49 @@ class GmailHelpers:
             
         except HttpError as error:
             logger.error(f"Gmail API error creating draft: {error}")
+            return {
+                "success": False,
+                "error": str(error)
+            }
+
+    @staticmethod
+    async def get_attachment(
+        access_token: str,
+        message_id: str,
+        attachment_id: str,
+        credentials: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Get attachment data from a Gmail message.
+        
+        Args:
+            access_token: User's Gmail access token (deprecated, use credentials)
+            message_id: ID of the message containing the attachment
+            attachment_id: ID of the attachment to retrieve
+            credentials: Full OAuth credentials dictionary (preferred)
+            
+        Returns:
+            Dict with attachment data (base64 encoded)
+        """
+        try:
+            if credentials:
+                service = GmailHelpers._get_service(credentials)
+            else:
+                service = GmailHelpers._get_service({"access_token": access_token})
+            
+            attachment = service.users().messages().attachments().get(
+                userId='me',
+                messageId=message_id,
+                id=attachment_id
+            ).execute()
+            
+            return {
+                "success": True,
+                "attachment": attachment
+            }
+            
+        except HttpError as error:
+            logger.error(f"Gmail API error getting attachment: {error}")
             return {
                 "success": False,
                 "error": str(error)
@@ -354,6 +447,14 @@ GMAIL_FUNCTIONS = {
             "subject": "Email subject",
             "body": "Email body content",
             "html": "Whether body is HTML (default: false)"
+        }
+    },
+    "get_attachment": {
+        "name": "get_attachment",
+        "description": "Get attachment data from a Gmail message",
+        "parameters": {
+            "message_id": "ID of the message containing the attachment",
+            "attachment_id": "ID of the attachment to retrieve"
         }
     }
 }

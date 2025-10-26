@@ -33,7 +33,7 @@ class SupabaseService:
                 logger.error("Supabase client not initialized")
                 return []
             
-            response = self.client.table("user_connected_apps").select("app_name").eq("user_id", user_id).eq("is_active", True).execute()
+            response = self.client.table("user_credentials").select("app_name").eq("user_id", user_id).eq("is_active", True).execute()
             
             if response.data:
                 connected_apps = [row["app_name"] for row in response.data]
@@ -175,6 +175,7 @@ class SupabaseService:
             
             update_data = {
                 "status": status,
+                "completed_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
             }
             
@@ -277,3 +278,36 @@ class SupabaseService:
         except Exception as e:
             logger.error(f"Error storing user credentials: {str(e)}")
             return None
+        
+    async def _update_connected_apps(
+        self,
+        user_id: str,
+        app_name: str,
+        app_type: str
+    ) -> bool:
+        """Update the user_connected_apps table for quick lookup"""
+        try:
+            if not self.client:
+                return False
+            
+            existing = self.client.table("user_connected_apps").select("id").eq("user_id", user_id).eq("app_type", app_type).execute()
+            
+            data = {
+                "user_id": user_id,
+                "app_name": app_name,
+                "app_type": app_type,
+                "is_active": True,
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            
+            if existing.data:
+                self.client.table("user_connected_apps").update(data).eq("id", existing.data[0]["id"]).execute()
+            else:
+                data["created_at"] = datetime.utcnow().isoformat()
+                self.client.table("user_connected_apps").insert(data).execute()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating connected apps: {str(e)}")
+            return False

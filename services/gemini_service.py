@@ -75,6 +75,10 @@ Please analyze this request and determine:
 3. What apps are required?
 4. Provide a clear workflow name and description.
 
+IMPORTANT: 
+- When listing required apps, use proper, human-readable app names as they would appear to end users. 
+- For example, use "Gmail" instead of "gmail", "Google Drive" instead of "google_drive", etc.
+
 Respond in JSON format with:
 {{
     "is_new_workflow": boolean,
@@ -82,12 +86,13 @@ Respond in JSON format with:
         "id": "template_id or null if new",
         "name": "workflow name",
         "description": "workflow description",
-        "required_apps": ["app1", "app2"],
+        "required_apps": ["Gmail", "Google Drive"],
         "category": "category name"
     }},
     "reasoning": "explanation of your decision"
 }}
 """
+
             
             # Call Gemini
             response = self.model.generate_content(
