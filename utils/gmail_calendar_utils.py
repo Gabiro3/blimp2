@@ -28,7 +28,6 @@ class GmailCalendarUtils:
         Args:
             credentials: Dict mapping app_type to credentials
         """
-        print(credentials)
         self.credentials = credentials
         self.gmail_creds = self._check_and_refresh("gmail")
         self.calendar_creds = self._check_and_refresh("google_calendar")
