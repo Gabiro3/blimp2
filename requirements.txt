@@ -12,3 +12,5 @@ google-auth-httplib2==0.2.0
 slack-sdk==3.33.1
 notion-client==2.2.1
 python-dotenv==1.0.1
+markdown2==2.5.0
+resend==2.4.0

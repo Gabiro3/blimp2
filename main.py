@@ -17,7 +17,10 @@ import json
 from services.gemini_service import GeminiService
 from services.supabase_service import SupabaseService
 from orchestrator import WorkflowOrchestrator
+from team_orchestrator import TeamWorkflowOrchestrator
 from app_chat_orchestrator import AppChatOrchestrator
+from multi_app_orchestrator import MultiAppOrchestrator
+from services.email_service import EmailService
 
 load_dotenv()
 
@@ -52,6 +55,9 @@ supabase_service = SupabaseService()
 gemini_service = GeminiService()
 orchestrator = WorkflowOrchestrator(supabase_service)
 app_chat_orchestrator = AppChatOrchestrator()
+email_service = EmailService()
+team_orchestrator = TeamWorkflowOrchestrator(supabase_service, email_service)
+multi_app_orchestrator = MultiAppOrchestrator(supabase_service)
 
 
 class RequiredApp(BaseModel):
@@ -165,6 +171,65 @@ class AppChatExecuteResponse(BaseModel):
     resource_urls: List[Dict[str, Any]]
     actions_taken: List[Dict[str, Any]]
     suggested_actions: List[Dict[str, Any]]
+    message: str
+
+
+class CreateTeamWorkflowRequest(BaseModel):
+    admin_id: str
+    workflow_title: str
+    workflow_json: str  # JSON string containing steps and configuration
+    schedule_type: Optional[str] = None  # 'daily', 'weekly', 'monthly', 'custom'
+    schedule_config: Optional[Dict[str, Any]] = None
+
+
+class CreateTeamWorkflowResponse(BaseModel):
+    success: bool
+    workflow_id: str
+    message: str
+
+
+class InviteTeamMemberRequest(BaseModel):
+    workflow_id: str
+    inviter_id: str
+    invitee_emails: List[str]
+
+
+class InviteTeamMemberResponse(BaseModel):
+    success: bool
+    invitations_sent: int
+    failed_invitations: List[str]
+    message: str
+
+
+class AcceptInvitationRequest(BaseModel):
+    invitation_id: str
+    user_id: str
+
+
+class AcceptInvitationResponse(BaseModel):
+    success: bool
+    workflow_id: str
+    workflow_title: str
+    message: str
+
+
+class TeamWorkflowResponse(BaseModel):
+    success: bool
+    workflow: Dict[str, Any]
+    message: str
+
+
+class ExecuteTeamWorkflowRequest(BaseModel):
+    workflow_id: str
+    user_id: str
+    parameters: Optional[Dict[str, Any]] = None
+
+
+class ExecuteTeamWorkflowResponse(BaseModel):
+    success: bool
+    execution_id: str
+    status: str
+    result: Dict[str, Any]
     message: str
 
 
@@ -337,12 +402,26 @@ async def execute_workflow(request: ExecuteWorkflowRequest):
             parameters=request.parameters,
         )
 
-        # Execute workflow using orchestrator
-        result = await orchestrator.execute_workflow(
-            workflow=workflow,
-            credentials=credentials,
-            parameters=request.parameters or {},
-        )
+        # 5. Choose orchestrator based on number of required apps
+        if len(required_apps) >= 3:
+            logger.info(
+                f"Using multi_app_orchestrator for multi-app workflow ({len(required_apps)} apps)"
+            )
+            result = await multi_app_orchestrator.execute_multi_app_workflow(
+                workflow=workflow,
+                credentials=credentials,
+                parameters=request.parameters or {},
+                user_id=request.user_id,
+            )
+        else:
+            logger.info(
+                f"Using standard orchestrator for workflow ({len(required_apps)} apps)"
+            )
+            result = await orchestrator.execute_workflow(
+                workflow=workflow,
+                credentials=credentials,
+                parameters=request.parameters or {},
+            )
 
         # Update execution status
         status = "completed" if result.get("success") else "failed"
@@ -372,10 +451,9 @@ async def execute_workflow(request: ExecuteWorkflowRequest):
 
 @app.post("/api/execute-custom-workflow", response_model=ExecuteCustomWorkflowResponse)
 async def execute_custom_workflow(request: ExecuteCustomWorkflowRequest):
-    logger.info("Request made %s", request)
     """
     Execute a custom workflow immediately without processing through Gemini
-    
+
     Flow:
     1. Parse workflow_json to extract steps and app types
     2. Determine workflow type based on app combinations
@@ -476,12 +554,25 @@ async def execute_custom_workflow(request: ExecuteCustomWorkflowRequest):
             "steps": steps,
         }
 
-        # Execute workflow using orchestrator
-        result = await orchestrator.execute_workflow(
-            workflow=workflow,
-            credentials=credentials,
-            parameters=request.parameters or {},
-        )
+        if len(app_types) >= 3:
+            logger.info(
+                f"Using multi_app_orchestrator for multi-app custom workflow ({len(app_types)} apps)"
+            )
+            result = await multi_app_orchestrator.execute_multi_app_workflow(
+                workflow=workflow,
+                credentials=credentials,
+                parameters=request.parameters or {},
+                user_id=request.user_id,
+            )
+        else:
+            logger.info(
+                f"Using standard orchestrator for custom workflow ({len(app_types)} apps)"
+            )
+            result = await orchestrator.execute_workflow(
+                workflow=workflow,
+                credentials=credentials,
+                parameters=request.parameters or {},
+            )
 
         status = "completed" if result.get("success") else "failed"
 
@@ -688,6 +779,405 @@ async def app_chat_execute(request: AppChatExecuteRequest):
         raise
     except Exception as e:
         logger.error(f"Error executing app chat: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/team-workflows/create", response_model=CreateTeamWorkflowResponse)
+async def create_team_workflow(request: CreateTeamWorkflowRequest):
+    """
+    Create a new team workflow
+
+    Flow:
+    1. Parse workflow JSON
+    2. Create team workflow in database
+    3. Return workflow ID
+    """
+    try:
+        logger.info(
+            f"Creating team workflow '{request.workflow_title}' for admin {request.admin_id}"
+        )
+
+        # Parse workflow JSON
+        try:
+            workflow_data = json.loads(request.workflow_json)
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid workflow_json format: {str(e)}"
+            )
+
+        # Create team workflow
+        workflow_id = await supabase_service.create_team_workflow(
+            admin_id=request.admin_id,
+            workflow_title=request.workflow_title,
+            workflow_json=workflow_data,
+            schedule_type=request.schedule_type,
+            schedule_config=request.schedule_config,
+        )
+
+        if not workflow_id:
+            raise HTTPException(
+                status_code=500, detail="Failed to create team workflow"
+            )
+
+        logger.info(f"Team workflow created: {workflow_id}")
+
+        return CreateTeamWorkflowResponse(
+            success=True,
+            workflow_id=workflow_id,
+            message=f"Team workflow '{request.workflow_title}' created successfully",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating team workflow: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/team-workflows/invite", response_model=InviteTeamMemberResponse)
+async def invite_team_members(request: InviteTeamMemberRequest):
+    """
+    Invite team members to join a workflow
+
+    Flow:
+    1. Verify workflow exists and user is admin
+    2. Create invitations in database
+    3. Send invitation emails via Resend
+    4. Return invitation status
+    """
+    try:
+        logger.info(
+            f"Inviting {len(request.invitee_emails)} members to workflow {request.workflow_id}"
+        )
+
+        # Get workflow details
+        workflow = await supabase_service.get_team_workflow(request.workflow_id)
+
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        logger.info(
+            f"Workflow found: {workflow['id'], {workflow['admin_id']}, {request.inviter_id}}"
+        )
+
+        # Verify user is admin
+        if workflow["admin_id"] != request.inviter_id:
+            raise HTTPException(
+                status_code=403, detail="Only workflow admin can invite members"
+            )
+        inviter_data = (
+            supabase_service.client.table("profiles")
+            .select("full_name")
+            .eq("id", request.inviter_id)
+            .single()
+            .execute()
+        )
+
+        if not inviter_data or not inviter_data.data:
+            inviter_name = "Team Admin"  # Fallback
+        else:
+            inviter_name = inviter_data.data["full_name"]
+
+        invitations_sent = 0
+        failed_invitations = []
+
+        # Create invitation link base URL
+        base_url = os.getenv("FRONTEND_URL", "https://blimp.app")
+
+        for invitee_email in request.invitee_emails:
+            try:
+                # Create invitation in database
+                invitation_id = await supabase_service.create_workflow_invitation(
+                    workflow_id=request.workflow_id,
+                    inviter_id=request.inviter_id,
+                    invitee_email=invitee_email,
+                )
+
+                if not invitation_id:
+                    failed_invitations.append(invitee_email)
+                    continue
+
+                # Send invitation email
+                invitation_link = f"{base_url}/team-workflows/join/{invitation_id}"
+
+                email_result = await email_service.send_team_workflow_invitation(
+                    invitee_email=invitee_email,
+                    inviter_name=inviter_name,
+                    workflow_title=workflow["workflow_title"],
+                    workflow_description=f"Collaborative workflow with {len(workflow.get('members_json', [])) + 1} members",
+                    invitation_link=invitation_link,
+                )
+
+                if email_result.get("success"):
+                    invitations_sent += 1
+                    logger.info(f"Invitation sent to {invitee_email}")
+                else:
+                    failed_invitations.append(invitee_email)
+                    logger.error(
+                        f"Failed to send invitation to {invitee_email}: {email_result.get('error')}"
+                    )
+
+            except Exception as e:
+                logger.error(f"Error inviting {invitee_email}: {str(e)}")
+                failed_invitations.append(invitee_email)
+
+        return InviteTeamMemberResponse(
+            success=invitations_sent > 0,
+            invitations_sent=invitations_sent,
+            failed_invitations=failed_invitations,
+            message=f"Sent {invitations_sent} invitation(s). {len(failed_invitations)} failed.",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error inviting team members: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/api/team-workflows/accept-invitation", response_model=AcceptInvitationResponse
+)
+async def accept_invitation(request: AcceptInvitationRequest):
+    """
+    Accept a team workflow invitation
+
+    Flow:
+    1. Verify invitation exists and is pending
+    2. Add user to workflow members
+    3. Update invitation status
+    4. Return workflow details
+    """
+    try:
+        logger.info(
+            f"User {request.user_id} accepting invitation {request.invitation_id}"
+        )
+
+        # Get invitation details
+        invitation = await supabase_service.get_workflow_invitation(
+            request.invitation_id
+        )
+
+        if not invitation:
+            raise HTTPException(status_code=404, detail="Invitation not found")
+
+        if invitation["status"] != "pending":
+            raise HTTPException(
+                status_code=400, detail=f"Invitation already {invitation['status']}"
+            )
+
+        # Add user to workflow
+        success = await supabase_service.add_team_member(
+            workflow_id=invitation["workflow_id"], user_id=request.user_id
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=500, detail="Failed to add user to workflow"
+            )
+
+        # Update invitation status
+        await supabase_service.update_invitation_status(
+            invitation_id=request.invitation_id,
+            status="accepted",
+            invitee_id=request.user_id,
+        )
+
+        # Get workflow details
+        workflow = await supabase_service.get_team_workflow(invitation["workflow_id"])
+
+        logger.info(
+            f"User {request.user_id} joined workflow {invitation['workflow_id']}"
+        )
+
+        return AcceptInvitationResponse(
+            success=True,
+            workflow_id=invitation["workflow_id"],
+            workflow_title=workflow["workflow_title"] if workflow else "Team Workflow",
+            message="Successfully joined team workflow",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error accepting invitation: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/team-workflows/{workflow_id}", response_model=TeamWorkflowResponse)
+async def get_team_workflow(workflow_id: str, user_id: str):
+    """Get team workflow details"""
+    try:
+        workflow = await supabase_service.get_team_workflow(workflow_id)
+
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        # Verify user has access (is admin or member)
+        is_admin = workflow["admin_id"] == user_id
+        is_member = any(
+            member.get("user_id") == user_id
+            for member in workflow.get("members_json", [])
+        )
+
+        if not (is_admin or is_member):
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        return TeamWorkflowResponse(
+            success=True, workflow=workflow, message="Workflow retrieved successfully"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting team workflow: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/team-workflows/user/{user_id}")
+async def get_user_team_workflows(user_id: str):
+    """Get all team workflows for a user"""
+    try:
+        workflows = await supabase_service.get_user_team_workflows(user_id)
+
+        return {"success": True, "workflows": workflows, "count": len(workflows)}
+
+    except Exception as e:
+        logger.error(f"Error getting user team workflows: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/team-workflows/execute", response_model=ExecuteTeamWorkflowResponse)
+async def execute_team_workflow(request: ExecuteTeamWorkflowRequest):
+    """
+    Execute a team workflow
+
+    Flow:
+    1. Verify user has access to workflow
+    2. Get workflow details and parse steps
+    3. Execute workflow using orchestrator
+    4. Return execution results
+    """
+    try:
+        logger.info(
+            f"Executing team workflow {request.workflow_id} for user {request.user_id}"
+        )
+
+        # Get workflow details
+        workflow = await supabase_service.get_team_workflow(request.workflow_id)
+
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        # Verify user has access
+        is_admin = workflow["admin_id"] == request.user_id
+        is_member = any(
+            member.get("user_id") == request.user_id
+            for member in workflow.get("members_json", [])
+        )
+
+        if not (is_admin or is_member):
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Parse workflow JSON
+        workflow_data = workflow["workflow_json"]
+        steps = workflow_data.get("steps", [])
+
+        if not steps:
+            raise HTTPException(status_code=400, detail="No steps found in workflow")
+
+        # Extract app types
+        app_types = []
+        for step in steps:
+            app_type = step.get("app_type", "")
+            if app_type and app_type.lower() != "trigger":
+                app_types.append(app_type)
+
+        # Determine workflow type
+        workflow_type = None
+        app_types_lower = [app.lower() for app in app_types]
+
+        if "gmail" in app_types_lower and "google calendar" in app_types_lower:
+            workflow_type = "gmail_to_calendar"
+        elif "gmail" in app_types_lower and "google drive" in app_types_lower:
+            workflow_type = "gmail_to_gdrive"
+        elif "notion" in app_types_lower and "slack" in app_types_lower:
+            workflow_type = "notion_to_slack"
+        elif "notion" in app_types_lower and "gmail" in app_types_lower:
+            workflow_type = "notion_to_gmail"
+        elif "notion" in app_types_lower and "discord" in app_types_lower:
+            workflow_type = "notion_to_discord"
+        elif "google calendar" in app_types_lower and "slack" in app_types_lower:
+            workflow_type = "gcalendar_to_slack"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported app combination: {', '.join(app_types)}",
+            )
+
+        # Get user credentials
+        credentials = {}
+        for app in app_types:
+            app_creds = await supabase_service.get_and_refresh_credentials(
+                user_id=request.user_id, app_name=app
+            )
+            if not app_creds:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Missing credentials for {app}. Please connect the app.",
+                )
+            credentials[app.lower().replace(" ", "_")] = app_creds
+
+        # Generate execution ID
+        execution_id = str(uuid.uuid4())
+
+        # Create workflow object for orchestrator
+        workflow_obj = {
+            "id": request.workflow_id,
+            "name": workflow["workflow_title"],
+            "description": f"Team workflow: {workflow['workflow_title']}",
+            "type": workflow_type,
+            "required_apps": app_types,
+            "steps": steps,
+        }
+        if len(app_types) >= 3:
+            logger.info(
+                f"Using multi_app_orchestrator for multi-app custom workflow ({len(app_types)} apps)"
+            )
+            result = await multi_app_orchestrator.execute_multi_app_workflow(
+                workflow=workflow,
+                credentials=credentials,
+                parameters=request.parameters or {},
+                user_id=request.user_id,
+            )
+
+        # Execute workflow
+        result = await team_orchestrator.execute_workflow(
+            workflow=workflow_obj,
+            credentials=credentials,
+            parameters=request.parameters or {},
+            user_id=request.user_id,
+        )
+
+        status = "completed" if result.get("success") else "failed"
+
+        logger.info(f"Team workflow execution {execution_id} {status}")
+
+        return ExecuteTeamWorkflowResponse(
+            success=result.get("success", False),
+            execution_id=execution_id,
+            status=status,
+            result=result,
+            message=(
+                f"Team workflow executed successfully"
+                if result.get("success")
+                else f"Team workflow execution failed: {result.get('error')}"
+            ),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error executing team workflow: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

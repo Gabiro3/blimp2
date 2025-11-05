@@ -13,6 +13,9 @@ from helpers.gmail_helpers import GmailHelpers
 from helpers.slack_helpers import SlackHelpers
 from helpers.gcalendar_helpers import GCalendarHelpers
 from helpers.gdrive_helpers import GDriveHelpers
+from helpers.trello_helpers import TrelloHelpers
+from helpers.github_helpers import GitHubHelpers
+from helpers.google_docs_helpers import GoogleDocsHelpers
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +122,17 @@ class AppChatOrchestrator:
                 parameters=parameters,
                 credentials=credentials,
             )
+
+            if (
+                app_name == "google_docs"
+                and function_name == "generate_and_insert_content"
+            ):
+                return await self._handle_google_docs_content_generation(
+                    user_id=user_id,
+                    query=query,
+                    parameters=parameters,
+                    credentials=credentials,
+                )
 
             if not fetched_data.get("success"):
                 return {
@@ -283,6 +297,32 @@ class AppChatOrchestrator:
                         access_token=credentials.get("access_token"), **parameters
                     )
 
+            elif app_name.lower() == "google_docs":
+                helper = GoogleDocsHelpers()
+                func = getattr(helper, function_name, None)
+                if func:
+                    return await func(
+                        access_token=credentials.get("access_token"),
+                        credentials=credentials,
+                        **parameters,
+                    )
+
+            elif app_name.lower() == "trello":
+                helper = TrelloHelpers()
+                func = getattr(helper, function_name, None)
+                if func:
+                    return await func(
+                        access_token=credentials.get("access_token"), **parameters
+                    )
+
+            elif app_name.lower() == "github":
+                helper = GitHubHelpers()
+                func = getattr(helper, function_name, None)
+                if func:
+                    return await func(
+                        access_token=credentials.get("access_token"), **parameters
+                    )
+
             return {
                 "success": False,
                 "error": f"Unsupported app or function: {app_name}.{function_name}",
@@ -351,7 +391,7 @@ class AppChatOrchestrator:
             messages = fetched_data.get("messages", [])
             return "message", messages
 
-        elif app_name.lower() == "google_drive":
+        elif app_name.lower() == "google_calendar":
             events = fetched_data.get("events", [])
             return "event", events
 
@@ -364,6 +404,22 @@ class AppChatOrchestrator:
             else:
                 files = fetched_data.get("files", [])
             return "file", files
+
+        elif app_name.lower() == "google_docs":
+            documents = fetched_data.get("documents", [])
+            # Handle different response types from Google Docs functions
+            if "document" in fetched_data and not documents:
+                # Single document from create_document or get_document_content
+                documents = [fetched_data.get("document", {})]
+            return "document", documents
+
+        elif app_name.lower() == "trello":
+            boards = fetched_data.get("boards", [])
+            return "board", boards
+
+        elif app_name.lower() == "github":
+            repositories = fetched_data.get("repositories", [])
+            return "repository", repositories
 
         return "unknown", []
 
@@ -439,9 +495,275 @@ class AppChatOrchestrator:
                 # Google Drive file URL
                 url = f"https://drive.google.com/file/d/{item_id}/view"
 
+            elif app_name.lower() == "google_docs":
+                # Google Docs document URL
+                url = f"https://docs.google.com/document/d/{item_id}/edit"
+
+            elif app_name.lower() == "trello":
+                # Trello URLs need board ID and card ID
+                board_id = item.get("board_id", "")
+                card_id = item.get("card_id", "")
+                if board_id and card_id:
+                    url = f"https://trello.com/c/{card_id}"
+
+            elif app_name.lower() == "github":
+                # GitHub URLs need repository owner and name
+                owner = item.get("owner", "")
+                repo_name = item.get("repo_name", "")
+                if owner and repo_name:
+                    url = f"https://github.com/{owner}/{repo_name}"
+
             if url:
                 urls.append(
                     {"id": item_id, "summary": item.get("summary", ""), "url": url}
                 )
 
         return urls
+
+    async def _handle_google_docs_content_generation(
+        self,
+        user_id: str,
+        query: str,
+        parameters: Dict[str, Any],
+        credentials: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Handle Google Docs content generation (research and insert)
+
+        Args:
+            user_id: User ID
+            query: User's original query
+            parameters: Parameters including research_topic, action, etc.
+            credentials: User credentials
+
+        Returns:
+            Dict with operation results
+        """
+        try:
+            research_topic = parameters.get("research_topic", "")
+            action = parameters.get("action", "create_new")
+            document_title = parameters.get(
+                "document_title", f"Research: {research_topic}"
+            )
+            document_name = parameters.get("document_name", "")
+
+            logger.info(f"Generating research content for topic: {research_topic}")
+
+            # Generate research content using Gemini
+            research_content = await self._generate_research_content(research_topic)
+
+            if not research_content.get("success"):
+                return {
+                    "success": False,
+                    "error": f"Failed to generate research content: {research_content.get('error')}",
+                }
+
+            content = research_content.get("content", "")
+
+            # Determine action: create new or append to existing
+            if action == "create_new":
+                # Create a new document
+                result = await GoogleDocsHelpers.create_document(
+                    access_token=credentials.get("access_token"),
+                    title=document_title,
+                    content=content,
+                    credentials=credentials,
+                )
+
+                if not result.get("success"):
+                    return {
+                        "success": False,
+                        "error": f"Failed to create document: {result.get('error')}",
+                    }
+
+                doc_id = result.get("document_id")
+                web_link = result.get("web_link")
+
+                return {
+                    "success": True,
+                    "answer": f"I've successfully created a new Google Doc titled '{document_title}' with comprehensive research about {research_topic}. The document includes detailed findings with references and citations.",
+                    "confidence": "high",
+                    "data_found": True,
+                    "relevant_items": [
+                        {
+                            "id": doc_id,
+                            "summary": f"{document_title} - Research document with {len(content.split())} words",
+                            "title": document_title,
+                            "content_preview": (
+                                content[:500] + "..." if len(content) > 500 else content
+                            ),
+                        }
+                    ],
+                    "resource_urls": [
+                        {"id": doc_id, "summary": document_title, "url": web_link}
+                    ],
+                    "suggested_actions": [
+                        {
+                            "action": "Open the document to review",
+                            "type": "open_document",
+                        }
+                    ],
+                }
+
+            elif action == "append_to_existing":
+                # Search for the document first
+                search_result = await GoogleDocsHelpers.search_documents(
+                    access_token=credentials.get("access_token"),
+                    query=f"name contains '{document_name}'",
+                    max_results=5,
+                    credentials=credentials,
+                )
+
+                if not search_result.get("success") or not search_result.get(
+                    "documents"
+                ):
+                    return {
+                        "success": False,
+                        "error": f"Could not find document named '{document_name}'. Please check the document name or create a new one.",
+                    }
+
+                # Use the first matching document
+                doc = search_result.get("documents", [])[0]
+                doc_id = doc.get("id")
+                doc_title = doc.get("name", document_name)
+
+                # Append content to the document
+                append_result = await GoogleDocsHelpers.append_to_document(
+                    access_token=credentials.get("access_token"),
+                    document_id=doc_id,
+                    content=f"\n\n--- Research about {research_topic} ---\n\n{content}",
+                    credentials=credentials,
+                )
+
+                if not append_result.get("success"):
+                    return {
+                        "success": False,
+                        "error": f"Failed to append content: {append_result.get('error')}",
+                    }
+
+                web_link = f"https://docs.google.com/document/d/{doc_id}/edit"
+
+                return {
+                    "success": True,
+                    "answer": f"I've successfully added research about {research_topic} to your document '{doc_title}'. The new content includes detailed findings with references and has been appended to the end of the document.",
+                    "confidence": "high",
+                    "data_found": True,
+                    "relevant_items": [
+                        {
+                            "id": doc_id,
+                            "summary": f"{doc_title} - Updated with research about {research_topic}",
+                            "title": doc_title,
+                            "content_preview": (
+                                content[:500] + "..." if len(content) > 500 else content
+                            ),
+                        }
+                    ],
+                    "resource_urls": [
+                        {"id": doc_id, "summary": doc_title, "url": web_link}
+                    ],
+                    "suggested_actions": [
+                        {
+                            "action": "Review the updated document",
+                            "type": "open_document",
+                        }
+                    ],
+                }
+
+            else:
+                return {"success": False, "error": f"Unknown action: {action}"}
+
+        except Exception as e:
+            logger.error(
+                f"Error handling Google Docs content generation: {str(e)}",
+                exc_info=True,
+            )
+            return {"success": False, "error": str(e)}
+
+    async def _generate_research_content(self, topic: str) -> Dict[str, Any]:
+        """
+        Generate research content about a topic using Gemini
+
+        Args:
+            topic: Research topic
+
+        Returns:
+            Dict with generated content
+        """
+        try:
+            import google.generativeai as genai
+            import os
+
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                return {"success": False, "error": "GEMINI_API_KEY not configured"}
+
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-2.0-flash-exp")
+
+            prompt = f"""You are a research assistant. Generate comprehensive, well-researched content about the following topic:
+
+Topic: {topic}
+
+Requirements:
+1. Provide detailed, factual information with proper context
+2. Include historical background if relevant
+3. Discuss current trends and developments
+4. Include multiple perspectives or viewpoints
+5. Add references and citations (use realistic academic/news sources)
+6. Structure the content with clear sections
+7. Aim for 800-1200 words
+8. Use professional, academic tone
+9. Include statistics and data points where appropriate
+
+IMPORTANT FORMATTING RULES:
+- Use ## for main section headings (e.g., ## Introduction)
+- Use ### for subsection headings (e.g., ### Historical Context)
+- Use **text** ONLY for emphasis on key terms or important phrases
+- Write in clear paragraphs with proper line breaks
+- Do NOT overuse bold formatting - only for truly important terms
+- Keep formatting minimal and clean for readability
+
+Structure:
+## [Title of Research]
+
+[Introduction paragraph]
+
+## Main Section 1
+[Content with paragraphs]
+
+### Subsection if needed
+[Content]
+
+## Main Section 2
+[Content]
+
+## Conclusion
+[Summary]
+
+## References
+[List of sources]
+
+Generate the research content now:"""
+
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7, max_output_tokens=2048
+                ),
+            )
+
+            content = response.text
+
+            logger.info(
+                f"Generated {len(content)} characters of research content for topic: {topic}"
+            )
+
+            return {
+                "success": True,
+                "content": content,
+                "word_count": len(content.split()),
+            }
+
+        except Exception as e:
+            logger.error(f"Error generating research content: {str(e)}", exc_info=True)
+            return {"success": False, "error": str(e)}

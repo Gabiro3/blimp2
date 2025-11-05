@@ -10,9 +10,12 @@ from typing import Dict, Any, List, Optional
 import google.generativeai as genai
 
 from helpers.gmail_helpers import GMAIL_FUNCTIONS
+from helpers.google_docs_helpers import GOOGLE_DOCS_FUNCTIONS
 from helpers.slack_helpers import SLACK_FUNCTIONS
 from helpers.gcalendar_helpers import GCALENDAR_FUNCTIONS
 from helpers.gdrive_helpers import GDRIVE_FUNCTIONS
+from helpers.trello_helpers import TRELLO_FUNCTIONS
+from helpers.github_helpers import GITHUB_FUNCTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +193,10 @@ Based on the user's query and the fetched data, provide a helpful, accurate, and
             "gmail": GMAIL_FUNCTIONS,
             "slack": SLACK_FUNCTIONS,
             "google_calendar": GCALENDAR_FUNCTIONS,
+            "google_docs": GOOGLE_DOCS_FUNCTIONS,
             "google_drive": GDRIVE_FUNCTIONS,
+            "trello": TRELLO_FUNCTIONS,
+            "github": GITHUB_FUNCTIONS,
         }
         return function_map.get(app_name.lower(), {})
 
@@ -341,6 +347,133 @@ Example Response:
     "reasoning": "User wants to see recent changes to their Google Drive, so we'll fetch recently modified files from the past week"
 }}
 """
+        elif inquiry_app.lower() == "google_docs":
+            app_specific = """
+    GOOGLE DOCS-SPECIFIC INSTRUCTIONS:
+    1. Use 'search_documents' to find documents by name or content
+    2. Use 'create_document' to create new documents with optional initial content
+    3. Use 'append_to_document' to add content to existing documents
+    4. Use 'get_document_content' to retrieve full document text
+    5. Use 'get_recent_documents' to fetch recently modified documents
+    6. Use 'share_document' to share documents with specific users
+    7. IMPORTANT: Include document title, ID, content, and modification date in results
+
+    CRITICAL: RESEARCH AND CONTENT GENERATION WORKFLOW
+    When the user asks to "research [topic] and insert/add to Google Docs":
+    1. This is a CONTENT GENERATION task, NOT a data fetching task
+    2. Set data_fetch_plan.function to "generate_and_insert_content" (special marker)
+    3. Include the research topic in parameters
+    4. The system will:
+    a) Generate research content using Gemini
+    b) Format it properly with references
+    c) Either create a new document OR append to existing one
+    5. DO NOT use search_documents or get_recent_documents for these queries
+
+    Example for Research Query:
+    {{
+    "data_fetch_plan": {{
+        "app": "google_docs",
+        "function": "generate_and_insert_content",
+        "parameters": {{
+            "research_topic": "9-to-5 workweek",
+            "action": "create_new",
+            "document_title": "Research: 9-to-5 Workweek"
+        }},
+        "description": "Generate research content about 9-to-5 workweek and create a new document"
+    }},
+    "actions": [],
+    "reasoning": "User wants to research a topic and insert it into Google Docs. This requires content generation, not data fetching."
+    }}
+
+    Example for Append to Existing:
+    {{
+    "data_fetch_plan": {{
+        "app": "google_docs",
+        "function": "generate_and_insert_content",
+        "parameters": {{
+            "research_topic": "remote work trends",
+            "action": "append_to_existing",
+            "document_name": "Work Research"
+        }},
+        "description": "Generate research content about remote work and append to existing document"
+    }},
+    "actions": [],
+    "reasoning": "User wants to add research to an existing document. We'll generate content and append it."
+    }}
+
+    Common Query Patterns:
+    - "Find documents about [topic]" → search_documents(query="name contains 'topic'", max_results=10)
+    - "Create a document about [topic]" → create_document(title="Topic Document", content="...")
+    - "Add [content] to document [name]" → First search_documents to find ID, then append_to_document(document_id="id", content="...")
+    - "Research [topic] and insert into Google Docs" → generate_and_insert_content(research_topic="topic", action="create_new")
+    - "Recent documents" → get_recent_documents(max_results=10)
+    - "Get content of [document]" → get_document_content(document_id="id")
+    - "Share [document] with [email]" → share_document(document_id="id", email="user@example.com", role="writer")
+
+    Parameter Guidelines:
+    - For searching, use query parameter with Google Drive search syntax: "name contains 'keyword'"
+    - For creating documents, always provide a title and optional initial content
+    - For appending content, you need the document_id (use search first if needed)
+    - Default max_results to 10 unless user specifies otherwise
+    - For sharing, role can be: "reader", "commenter", or "writer"
+    - For research queries, use generate_and_insert_content with research_topic parameter
+    """
+
+        elif inquiry_app.lower() == "trello":
+            app_specific = """
+TRELLO-SPECIFIC INSTRUCTIONS:
+1. Use 'get_boards' to fetch user's boards
+2. Use 'get_lists' to fetch lists within a board
+3. Use 'get_cards' to fetch cards within a list
+4. Use 'get_card_details' to get detailed information about a card
+5. Use 'search_cards' to search for cards by query
+6. IMPORTANT: Include board name, list name, card name, card ID, and card details in results
+
+Common Query Patterns:
+- "List all boards" → get_boards()
+- "Cards in [list]" → get_cards(list_id="list_id")
+- "Details of card [name]" → get_card_details(card_id="card_id")
+- "Search for [topic]" → search_cards(query="topic")
+
+Example Response:
+{{
+    "data_fetch_plan": {{
+        "app": "trello",
+        "function": "search_cards",
+        "parameters": {{"query": "funding round"}},
+        "description": "Search for cards related to funding round"
+    }},
+    "actions": [],
+    "reasoning": "User wants to find Trello cards about funding, so we'll search with relevant keywords"
+}}
+"""
+        elif inquiry_app.lower() == "github":
+            app_specific = """
+GITHUB-SPECIFIC INSTRUCTIONS:
+1. Use 'list_repos' to fetch user's repositories
+2. Use 'get_issues' to fetch issues within a repository
+3. Use 'get_issue_details' to get detailed information about an issue
+4. Use 'search_issues' to search for issues by query
+5. IMPORTANT: Include repository name, issue title, issue ID, and issue details in results
+
+Common Query Patterns:
+- "List all repositories" → list_repos()
+- "Issues in [repo]" → get_issues(repo_name="repo_name")
+- "Details of issue [number]" → get_issue_details(repo_name="repo_name", issue_number=1)
+- "Search for [topic]" → search_issues(query="topic")
+
+Example Response:
+{{
+    "data_fetch_plan": {{
+        "app": "github",
+        "function": "search_issues",
+        "parameters": {{"query": "funding round"}},
+        "description": "Search for issues related to funding round"
+    }},
+    "actions": [],
+    "reasoning": "User wants to find GitHub issues about funding, so we'll search with relevant keywords"
+}}
+"""
         else:
             app_specific = """
 GENERAL INSTRUCTIONS:
@@ -453,7 +586,7 @@ Example Response:
 }
 """
             )
-        elif inquiry_app and inquiry_app.lower() == "gcalendar":
+        elif inquiry_app and inquiry_app.lower() == "google_calendar":
             return (
                 base_prompt
                 + """
@@ -553,6 +686,187 @@ Example Response:
         {
             "action": "Open Q4 Report",
             "type": "open_file"
+        }
+    ]
+}
+"""
+            )
+        elif inquiry_app and inquiry_app.lower() == "trello":
+            return (
+                base_prompt
+                + """
+
+TRELLO RESPONSE INSTRUCTIONS:
+1. ALWAYS include detailed card information:
+   - Card name
+   - Board name
+   - List name
+   - Card ID
+   - Card description
+   - Labels
+   - Due date
+
+2. For each relevant card in relevant_items, include:
+   - "id": Card ID
+   - "summary": Card name and brief description
+   - "board": Board name
+   - "list": List name
+   - "description": Card description
+   - "labels": List of labels
+   - "due": Due date
+
+3. Answer format:
+   - Direct answer to the query
+   - List cards with full details
+   - Include context about what was found
+
+4. If no cards match: Clearly state no matching cards were found
+
+Example Response:
+{
+    "answer": "You have 2 cards related to the funding round on the 'Project Management' board. One is titled 'Research Funding Sources' and the other is 'Schedule Meeting with Investors'. Both are due next week.",
+    "confidence": "high",
+    "data_found": true,
+    "relevant_items": [
+        {
+            "id": "card123",
+            "summary": "Research Funding Sources",
+            "board": "Project Management",
+            "list": "To Do",
+            "description": "Find potential funding sources for our Series A round",
+            "labels": ["funding", "research"],
+            "due": "2024-01-20"
+        }
+    ]
+}
+"""
+            )
+        elif inquiry_app and inquiry_app.lower() == "github":
+            return (
+                base_prompt
+                + """
+
+GITHUB RESPONSE INSTRUCTIONS:
+1. ALWAYS include detailed issue information:
+   - Issue title
+   - Repository name
+   - Issue ID
+   - Issue description
+   - Labels
+   - Assignees
+   - Created date
+   - Updated date
+
+2. For each relevant issue in relevant_items, include:
+   - "id": Issue ID
+   - "summary": Issue title and brief description
+   - "repo": Repository name
+   - "description": Issue description
+   - "labels": List of labels
+   - "assignees": List of assignees
+   - "created": Created date
+   - "updated": Updated date
+
+3. Answer format:
+   - Direct answer to the query
+   - List issues with full details
+   - Include context about what was found
+
+4. If no issues match: Clearly state no matching issues were found
+
+Example Response:
+{
+    "answer": "You have 1 issue related to the funding round in the 'Product' repository. It's titled 'Investor Meeting Preparation' and is due next week.",
+    "confidence": "high",
+    "data_found": true,
+    "relevant_items": [
+        {
+            "id": "issue456",
+            "summary": "Investor Meeting Preparation",
+            "repo": "Product",
+            "description": "Prepare for the upcoming investor meeting regarding Series A funding",
+            "labels": ["funding", "meeting"],
+            "assignees": ["john.doe"],
+            "created": "2024-01-10",
+            "updated": "2024-01-15"
+        }
+    ]
+}
+"""
+            )
+        elif inquiry_app and inquiry_app.lower() == "google_docs":
+            return (
+                base_prompt
+                + """
+
+GOOGLE DOCS RESPONSE INSTRUCTIONS:
+1. ALWAYS include detailed document information:
+   - Document title
+   - Document ID
+   - Content summary or full content
+   - Last modified date
+   - Created date
+   - Web link to the document
+
+2. For each relevant document in relevant_items, include:
+   - "id": Document ID (the long alphanumeric string)
+   - "summary": Document title and brief content summary
+   - "title": Full document title
+   - "modified": Last modified date
+   - "created": Created date
+   - "content_preview": First few paragraphs of content
+
+3. Answer format:
+   - Direct answer to the query
+   - List documents with full details
+   - Include content previews when relevant
+   - Provide web links for easy access
+
+4. If no documents match: Clearly state no matching documents were found
+
+5. For content insertion: Confirm what was added and where
+
+Example Response for Search:
+{
+    "answer": "I found 2 documents related to your research. The most recent one is 'Market Analysis 2024' which was updated yesterday and contains competitive research data. The other document 'Industry Trends' has background information from last week.",
+    "confidence": "high",
+    "data_found": true,
+    "relevant_items": [
+        {
+            "id": "1abc123xyz456",
+            "summary": "Market Analysis 2024 - Competitive research and market trends",
+            "title": "Market Analysis 2024",
+            "modified": "2024-01-15T14:30:00Z",
+            "created": "2024-01-10T09:00:00Z",
+            "content_preview": "This document contains comprehensive market analysis including competitor positioning, market size estimates, and growth projections..."
+        }
+    ],
+    "suggested_actions": [
+        {
+            "action": "Open Market Analysis document",
+            "type": "open_document"
+        }
+    ]
+}
+
+Example Response for Content Insertion:
+{
+    "answer": "I've successfully added the research content to your document '9-to-5 Workweek Research'. The document now includes detailed findings about the history of the 9-to-5 workweek, its impact on productivity, and modern alternatives, along with references to academic studies.",
+    "confidence": "high",
+    "data_found": true,
+    "relevant_items": [
+        {
+            "id": "1xyz789abc",
+            "summary": "9-to-5 Workweek Research - Updated with new research findings",
+            "title": "9-to-5 Workweek Research",
+            "modified": "2024-01-15T16:45:00Z",
+            "content_preview": "Research about the 9-to-5 workweek:\\n\\nHistory: The 9-to-5 workweek originated in the early 20th century..."
+        }
+    ],
+    "suggested_actions": [
+        {
+            "action": "Review the updated document",
+            "type": "open_document"
         }
     ]
 }

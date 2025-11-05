@@ -444,6 +444,7 @@ class SupabaseService:
                 "gmail",
                 "calendar",
                 "google_drive",
+                "google_docs",
                 "google_calendar",
                 "google_sheets",
             ]:
@@ -621,6 +622,8 @@ class SupabaseService:
                     "gmail",
                     "calendar",
                     "google drive",
+                    "google docs",
+                    "google_docs",
                     "google sheets",
                     "google_drive",
                     "google_calendar",
@@ -712,4 +715,259 @@ class SupabaseService:
             logger.error(
                 f"Error in get_and_refresh_credentials for {app_name}: {str(e)}"
             )
+            return None
+
+    async def create_team_workflow(
+        self,
+        admin_id: str,
+        workflow_title: str,
+        workflow_json: Dict[str, Any],
+        schedule_type: Optional[str] = None,
+        schedule_config: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Create a new team workflow"""
+        try:
+            if not self.client:
+                logger.error("Supabase client not initialized")
+                return None
+
+            data = {
+                "admin_id": admin_id,
+                "workflow_title": workflow_title,
+                "workflow_json": workflow_json,
+                "members_json": [],
+                "schedule_type": schedule_type,
+                "schedule_config": schedule_config,
+                "is_active": True,
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+
+            response = self.client.table("custom_team_workflows").insert(data).execute()
+
+            if response.data:
+                workflow_id = response.data[0]["id"]
+                logger.info(f"Created team workflow: {workflow_id}")
+                return workflow_id
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error creating team workflow: {str(e)}")
+            return None
+
+    async def get_team_workflow(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        """Get team workflow by ID"""
+        try:
+            if not self.client:
+                logger.error("Supabase client not initialized")
+                return None
+
+            response = (
+                self.client.table("custom_team_workflows")
+                .select("*")
+                .eq("id", workflow_id)
+                .eq("is_active", True)
+                .single()
+                .execute()
+            )
+
+            if response.data:
+                return response.data
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error fetching team workflow: {str(e)}")
+            return None
+
+    async def get_user_team_workflows(self, user_id: str) -> List[Dict[str, Any]]:
+        """Get all team workflows where user is admin or member"""
+        try:
+            if not self.client:
+                logger.error("Supabase client not initialized")
+                return []
+
+            # Get workflows where user is admin
+            admin_response = (
+                self.client.table("custom_team_workflows")
+                .select("*")
+                .eq("admin_id", user_id)
+                .eq("is_active", True)
+                .execute()
+            )
+
+            workflows = admin_response.data if admin_response.data else []
+
+            # Get workflows where user is a member
+            all_workflows = (
+                self.client.table("custom_team_workflows")
+                .select("*")
+                .eq("is_active", True)
+                .execute()
+            )
+
+            if all_workflows.data:
+                for workflow in all_workflows.data:
+                    members = workflow.get("members_json", [])
+                    if any(member.get("user_id") == user_id for member in members):
+                        if workflow not in workflows:
+                            workflows.append(workflow)
+
+            return workflows
+
+        except Exception as e:
+            logger.error(f"Error fetching user team workflows: {str(e)}")
+            return []
+
+    async def add_team_member(self, workflow_id: str, user_id: str) -> bool:
+        """Add a member to a team workflow, including full_name from profiles"""
+        try:
+            if not self.client:
+                logger.error("Supabase client not initialized")
+                return False
+
+            # Fetch workflow
+            workflow = await self.get_team_workflow(workflow_id)
+            if not workflow:
+                return False
+
+            members = workflow.get("members_json", [])
+
+            # Check if user is already a member
+            if any(member.get("user_id") == user_id for member in members):
+                logger.info(
+                    f"User {user_id} is already a member of workflow {workflow_id}"
+                )
+                return True
+
+            # Fetch user's full name from profiles
+            profile_response = (
+                self.client.table("profiles")
+                .select("full_name")
+                .eq("id", user_id)
+                .single()
+                .execute()
+            )
+
+            full_name = (
+                profile_response.data.get("full_name")
+                if profile_response and profile_response.data
+                else "Unknown User"
+            )
+
+            # Add new member with full_name
+            members.append(
+                {
+                    "user_id": user_id,
+                    "full_name": full_name,
+                    "joined_at": datetime.utcnow().isoformat(),
+                }
+            )
+
+            # Update workflow
+            response = (
+                self.client.table("custom_team_workflows")
+                .update(
+                    {
+                        "members_json": members,
+                        "updated_at": datetime.utcnow().isoformat(),
+                    }
+                )
+                .eq("id", workflow_id)
+                .execute()
+            )
+
+            return bool(response.data)
+
+        except Exception as e:
+            logger.error(f"Error adding team member: {str(e)}")
+            return False
+
+    async def create_workflow_invitation(
+        self, workflow_id: str, inviter_id: str, invitee_email: str
+    ) -> Optional[str]:
+        """Create a workflow invitation"""
+        try:
+            if not self.client:
+                logger.error("Supabase client not initialized")
+                return None
+
+            data = {
+                "workflow_id": workflow_id,
+                "inviter_id": inviter_id,
+                "invitee_email": invitee_email,
+                "status": "pending",
+                "invited_at": datetime.utcnow().isoformat(),
+            }
+
+            response = (
+                self.client.table("team_workflow_invitations").insert(data).execute()
+            )
+
+            if response.data:
+                invitation_id = response.data[0]["id"]
+                logger.info(f"Created invitation: {invitation_id}")
+                return invitation_id
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error creating invitation: {str(e)}")
+            return None
+
+    async def update_invitation_status(
+        self, invitation_id: str, status: str, invitee_id: Optional[str] = None
+    ) -> bool:
+        """Update invitation status"""
+        try:
+            if not self.client:
+                logger.error("Supabase client not initialized")
+                return False
+
+            update_data = {
+                "status": status,
+                "responded_at": datetime.utcnow().isoformat(),
+            }
+
+            if invitee_id:
+                update_data["invitee_id"] = invitee_id
+
+            response = (
+                self.client.table("team_workflow_invitations")
+                .update(update_data)
+                .eq("id", invitation_id)
+                .execute()
+            )
+
+            return bool(response.data)
+
+        except Exception as e:
+            logger.error(f"Error updating invitation status: {str(e)}")
+            return False
+
+    async def get_workflow_invitation(
+        self, invitation_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get invitation by ID"""
+        try:
+            if not self.client:
+                logger.error("Supabase client not initialized")
+                return None
+
+            response = (
+                self.client.table("team_workflow_invitations")
+                .select("*")
+                .eq("id", invitation_id)
+                .single()
+                .execute()
+            )
+
+            if response.data:
+                return response.data
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error fetching invitation: {str(e)}")
             return None
