@@ -724,7 +724,7 @@ IMPORTANT FORMATTING RULES:
 - Keep formatting minimal and clean for readability
 
 Structure:
-## [Title of Research]
+## [Title of Research/Document]
 
 [Introduction paragraph]
 
