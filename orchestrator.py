@@ -14,6 +14,9 @@ from utils.gmail_gdrive_utils import GmailGDriveUtils
 from utils.notion_discord_utils import NotionDiscordUtils
 from utils.notion_gmail_utils import NotionGmailUtils
 from utils.notion_slack_utils import NotionSlackUtils
+from utils.github_slack_utils import GitHubSlackUtils
+from utils.google_docs_trello_utils import GoogleDocsTrelloUtils
+from utils.trello_slack_utils import TrelloSlackUtils
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,9 @@ class WorkflowOrchestrator:
             "notion_gmail": NotionGmailUtils,
             "notion_discord": NotionDiscordUtils,
             "gcalendar_slack": GCalendarSlackUtils,
+            "github_slack": GitHubSlackUtils,
+            "google_docs_trello": GoogleDocsTrelloUtils,
+            "trello_slack": TrelloSlackUtils,
         }
 
         logger.info(
@@ -119,6 +125,12 @@ class WorkflowOrchestrator:
             return "notion_discord"
         elif {"google calendar", "slack"}.issubset(apps_set):
             return "gcalendar_slack"
+        elif {"github", "slack"}.issubset(apps_set):
+            return "github_slack"
+        elif {"google docs", "trello"}.issubset(apps_set):
+            return "google_docs_trello"
+        elif {"trello", "slack"}.issubset(apps_set):
+            return "trello_slack"
 
         # Add more combinations as needed
         return None
@@ -208,6 +220,25 @@ class WorkflowOrchestrator:
                 time_min=parameters.get("time_min"),
                 time_max=parameters.get("time_max"),
                 max_events=parameters.get("max_events", 10),
+            )
+        # GitHub → Slack workflows
+        elif "github" in workflow_name_lower and "slack" in workflow_name_lower:
+            return await util_instance.send_repository_updates_to_slack(
+                repo=parameters.get("repo"),
+                channel_id=parameters.get("channel_id"),
+            )
+        # Google Docs → Trello workflows
+        elif "google docs" in workflow_name_lower and "trello" in workflow_name_lower:
+            return await util_instance.document_trello_board_progress(
+                board_id=parameters.get("board_id"),
+                document_id=parameters.get("document_id"),
+                include_details=parameters.get("include_details", True),
+            )
+        # Trello → Slack workflows
+        elif "trello" in workflow_name_lower and "slack" in workflow_name_lower:
+            return await util_instance.send_board_updates_to_slack(
+                board_id=parameters.get("board_id"),
+                channel_id=parameters.get("channel_id"),
             )
 
         # Add more workflow routing logic as needed
