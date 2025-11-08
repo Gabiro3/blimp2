@@ -149,7 +149,7 @@ class AppChatPromptRequest(BaseModel):
 
 class AppChatPromptResponse(BaseModel):
     success: bool
-    data_fetch_plan: Dict[str, Any]
+    data_fetch_plan: Optional[Dict[str, Any]] = None
     actions: List[Dict[str, Any]]
     reasoning: str
     message: str
@@ -158,7 +158,7 @@ class AppChatPromptResponse(BaseModel):
 class AppChatExecuteRequest(BaseModel):
     user_id: str
     query: str
-    data_fetch_plan: Dict[str, Any]
+    data_fetch_plan: Optional[Dict[str, Any]] = None
     actions: Optional[List[Dict[str, Any]]] = None
 
 
@@ -714,10 +714,11 @@ async def app_chat_prompt(request: AppChatPromptRequest):
             raise HTTPException(
                 status_code=400, detail=result.get("error", "Failed to process query")
             )
+        logger.info(f"Result: {result}")
 
         return AppChatPromptResponse(
             success=True,
-            data_fetch_plan=result["data_fetch_plan"],
+            data_fetch_plan=result.get("data_fetch_plan", {}),
             actions=result.get("actions", []),
             reasoning=result.get("reasoning", ""),
             message="Query analyzed successfully. Ready to fetch data.",

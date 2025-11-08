@@ -101,7 +101,14 @@ class AppChatOrchestrator:
         """
         try:
             app_name = data_fetch_plan["app"]
-            function_name = data_fetch_plan["function"]
+            function_name = ""
+            if not data_fetch_plan["function"] and actions and len(actions) > 0:
+                function_name = actions[0].get("type")
+                if not app_name and actions[0].get("app"):
+                    app_name = actions[0]["app"]
+                logger.info(
+                    f"No function in data_fetch_plan; using fallback from actions: {function_name}"
+                )
             parameters = data_fetch_plan.get("parameters", {})
 
             # Get and refresh user credentials

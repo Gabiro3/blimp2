@@ -75,11 +75,11 @@ Analyze this query and determine:
 3. What parameters should be used?
 4. Should any actions be taken (e.g., send a reply)?
 
-Respond in JSON format with:
+Respond in JSON format with, ALWAYS RESPECT THIS FORMAT NO MATTER WHAT:
 {{
     "data_fetch_plan": {{
         "app": "app_name",
-        "function": "function_name",
+        "function": ex: "create_event" etc.,
         "parameters": {{}},
         "description": "what data this will fetch"
     }},

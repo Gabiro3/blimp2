@@ -113,8 +113,14 @@ class GCalendarHelpers:
                 event["description"] = description
             if location:
                 event["location"] = location
-            if attendees:
+            if isinstance(attendees, list) and all(
+                isinstance(a, str) and "@" in a for a in attendees
+            ):
                 event["attendees"] = [{"email": email} for email in attendees]
+            else:
+                logger.info(
+                    f"Skipping attendees — invalid or non-email format: {attendees}"
+                )
 
             created_event = (
                 service.events().insert(calendarId=calendar_id, body=event).execute()

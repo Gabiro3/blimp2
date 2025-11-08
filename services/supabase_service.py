@@ -627,6 +627,7 @@ class SupabaseService:
                     "google sheets",
                     "google_drive",
                     "google_calendar",
+                    "google calendar",
                     "google_sheets",
                 ]:
                     token_endpoint = "https://oauth2.googleapis.com/token"
