@@ -301,7 +301,9 @@ class AppChatOrchestrator:
                 func = getattr(helper, function_name, None)
                 if func:
                     return await func(
-                        access_token=credentials.get("access_token"), **parameters
+                        access_token=credentials.get("access_token"),
+                        refresh_token=credentials.get("refresh_token"),
+                        **parameters,
                     )
 
             elif app_name.lower() == "google_docs":
@@ -332,7 +334,7 @@ class AppChatOrchestrator:
 
             return {
                 "success": False,
-                "error": f"Unsupported app or function: {app_name}.{function_name}",
+                "error": f"Unsupported function: {function_name}",
             }
 
         except Exception as e:

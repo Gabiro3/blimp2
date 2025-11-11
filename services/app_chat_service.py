@@ -106,20 +106,60 @@ Respond STRICTLY in this JSON structure — never omit or rename any key:
 
             # Call Gemini
             response = self.gemini_service.generate_content(
-                [system_prompt, user_message],
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.3, response_mime_type="application/json"
-                ),
+                prompt=user_message,
+                system_instruction=system_prompt,
+                temperature=0.3,
+                response_format="json",
             )
 
             # Parse response
-            result = json.loads(response.text)
+            logger.info(f"Gemini response: {response}")
+            result = json.loads(response["content"])
             logger.info(f"Query analysis: {result.get('reasoning')}")
+            data_fetch_plan = result.get("data_fetch_plan", {})
+            actions = result.get("actions", [])
+
+            # --- 🧠 Smart correction logic ---
+            # If the function is "none" or missing, try to replace it with the first action type
+            if (
+                not data_fetch_plan.get("function")
+                or str(data_fetch_plan.get("function")).lower() == "none"
+            ):
+                if actions and actions[0].get("type"):
+                    default_function = actions[0]["type"]
+                    logger.info(
+                        f"No function returned; using default function from action type: {default_function}"
+                    )
+                    data_fetch_plan["function"] = default_function
+                else:
+                    logger.warning(
+                        "No function or actions provided — cannot infer default function."
+                    )
+            # 2️⃣ Fix missing or empty parameters
+            if not data_fetch_plan.get("parameters"):
+                # Try to find a matching action (by app or type)
+                matching_action = None
+                for action in actions:
+                    if action.get("app") == data_fetch_plan.get("app") or action.get(
+                        "type"
+                    ) == data_fetch_plan.get("function"):
+                        matching_action = action
+                        break
+
+                if matching_action and matching_action.get("parameters"):
+                    logger.info(
+                        f"No parameters in data_fetch_plan; using parameters from matching action '{matching_action.get('type')}'."
+                    )
+                    data_fetch_plan["parameters"] = matching_action["parameters"]
+                else:
+                    logger.warning(
+                        "No suitable action found to fill missing parameters."
+                    )
 
             return {
                 "success": True,
-                "data_fetch_plan": result["data_fetch_plan"],
-                "actions": result.get("actions", []),
+                "data_fetch_plan": data_fetch_plan,
+                "actions": actions,
                 "reasoning": result.get("reasoning"),
             }
 
@@ -158,27 +198,57 @@ Respond STRICTLY in this JSON structure — never omit or rename any key:
             )
 
             # Build user message
+            # Build user message
             user_message = f"""
-User Query: {query}
+            You are an intelligent AI assistant integrated with various user apps (like Google Drive, Gmail, Google Calendar, Slack, etc.).
 
-Fetched Data ({data_type}):
-{json.dumps(fetched_data, indent=2)}
+            User Query:
+            {query}
 
-Additional Context: {json.dumps(context) if context else "None"}
+            Fetched Data ({data_type}):
+            {json.dumps(fetched_data, indent=2)}
 
-Based on the user's query and the fetched data, provide a helpful, accurate, and DETAILED response.
-"""
+            Additional Context: {json.dumps(context) if context else "None"}
+
+            Your job:
+            1. **First**, identify whether the user's query is a "search/information request" or an "action/execution request".  
+            - **Search request examples:** "Find my upcoming meetings", "Show recent files", "List unread emails".
+            - **Action request examples:** "Create a folder", "Schedule a meeting", "Send an email", "Delete an event".
+
+            2. **If it’s a search/information request**:
+            - Summarize the fetched data meaningfully.
+            - Indicate confidence, whether data was found, and include relevant items or links.
+
+            3. **If it’s an action/execution request**:
+            - Assume the action has been successfully performed (unless data clearly shows an error).
+            - Respond *as if* you confirmed completion, e.g.:
+                - "The folder 'Project X Docs' has been created successfully in Google Drive."
+                - "Your meeting has been scheduled for tomorrow from 2–4 PM."
+                - "The email was sent successfully to John."
+            - Avoid phrases like “No data found” or “empty list” for successful actions.
+            - Include any relevant metadata (IDs, times, confirmations) if available in fetched_data or context.
+
+            4. Always return your response as a structured JSON object:
+            {{
+            "answer": "...",
+            "confidence": "high" | "medium" | "low",
+            "data_found": true | false,
+            "relevant_items": [...],
+            "resource_urls": [...],
+            "suggested_actions": [...]
+            }}
+            """
 
             # Call Gemini
             response = self.gemini_service.generate_content(
-                [system_prompt, user_message],
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.4, response_mime_type="application/json"
-                ),
+                prompt=user_message,
+                system_instruction=system_prompt,
+                temperature=0.4,
+                response_format="json",
             )
 
             # Parse response
-            result = json.loads(response.text)
+            result = json.loads(response["content"])
             logger.info(
                 f"Generated response with confidence: {result.get('confidence')}"
             )
@@ -622,7 +692,7 @@ GOOGLE CALENDAR RESPONSE INSTRUCTIONS:
    - List events chronologically
    - Include timing and location details
 
-4. If no events match: Clearly state no matching events were found
+4. If no events match: Tell them that they are free.
 
 Example Response:
 {
