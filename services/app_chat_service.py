@@ -17,6 +17,8 @@ from helpers.gdrive_helpers import GDRIVE_FUNCTIONS
 from helpers.trello_helpers import TRELLO_FUNCTIONS
 from helpers.github_helpers import GITHUB_FUNCTIONS
 
+from services.gemini_service import GeminiService
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,9 +27,10 @@ class AppChatService:
 
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
+        self.gemini_service = GeminiService()
         if self.api_key:
             genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel("gemini-2.0-flash-exp")
+            self.model = genai.GenerativeModel("gemini-2.0-flash")
             logger.info("App Chat service initialized successfully")
         else:
             logger.warning("GEMINI_API_KEY not found in environment variables")
@@ -75,11 +78,12 @@ Analyze this query and determine:
 3. What parameters should be used?
 4. Should any actions be taken (e.g., send a reply)?
 
-Respond in JSON format with, ALWAYS RESPECT THIS FORMAT NO MATTER WHAT:
+Respond STRICTLY in this JSON structure — never omit or rename any key:
+
 {{
     "data_fetch_plan": {{
         "app": "app_name",
-        "function": ex: "create_event" etc.,
+        "function": "send_message" or "create_event" etc.,   // Always include this key
         "parameters": {{}},
         "description": "what data this will fetch"
     }},
@@ -93,10 +97,15 @@ Respond in JSON format with, ALWAYS RESPECT THIS FORMAT NO MATTER WHAT:
     ],
     "reasoning": "explanation of the plan"
 }}
+
+⚠️ Rules:
+- Always include the "function" key in data_fetch_plan, even if its value is "none" or "unknown".
+- Never omit required keys or return plain text.
+- The JSON must be valid and parseable.
 """
 
             # Call Gemini
-            response = self.model.generate_content(
+            response = self.gemini_service.generate_content(
                 [system_prompt, user_message],
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.3, response_mime_type="application/json"
@@ -161,7 +170,7 @@ Based on the user's query and the fetched data, provide a helpful, accurate, and
 """
 
             # Call Gemini
-            response = self.model.generate_content(
+            response = self.gemini_service.generate_content(
                 [system_prompt, user_message],
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.4, response_mime_type="application/json"
@@ -288,23 +297,23 @@ Example Response:
             app_specific = """
 GOOGLE CALENDAR-SPECIFIC INSTRUCTIONS:
 1. Use 'list_events' to fetch calendar events
-2. Use 'time_min' and 'time_max' for date ranges (ISO 8601 format)
+2. Use 'start_time' and 'end_time' for date ranges (ISO 8601 format)
 3. Use 'q' parameter for text search in event titles/descriptions
 4. Set 'max_results' parameter (default: 10)
 5. IMPORTANT: Include event title, start/end times, location, attendees, and description
 
 Common Query Patterns:
-- "Today's meetings" → list_events(time_min="2024-01-15T00:00:00Z", time_max="2024-01-15T23:59:59Z")
+- "Today's meetings" → list_events(start_time="2024-01-15T00:00:00Z", end_time="2024-01-15T23:59:59Z")
 - "Meetings with [person]" → list_events(q="person name", max_results=10)
-- "Next week's events" → list_events(time_min="start_of_week", time_max="end_of_week")
+- "Next week's events" → list_events(start_time="start_of_week", end_time="end_of_week")
 - "Create meeting" → create_event action
 
 Example Response:
 {{
     "data_fetch_plan": {{
-        "app": "gcalendar",
+        "app": "google_calendar",
         "function": "list_events",
-        "parameters": {{"time_min": "2024-01-15T00:00:00Z", "time_max": "2024-01-22T23:59:59Z", "max_results": 20}},
+        "parameters": {{"start_time": "2024-01-15T00:00:00Z", "end_time": "2024-01-22T23:59:59Z", "max_results": 20}},
         "description": "Fetch events for next week"
     }},
     "actions": [],

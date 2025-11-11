@@ -3,11 +3,13 @@ Google Calendar helper functions using Google API Python Client.
 Provides CRUD operations for calendar events.
 """
 
+import json
 from typing import Dict, List, Any, Optional
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import dateparser
 import logging
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,28 @@ class GCalendarHelpers:
             return {"success": False, "error": str(error)}
 
     @staticmethod
+    def _parse_datetime(dt_str: str, tz_str: str = "UTC") -> str:
+        """
+        Parses natural language or ISO 8601 datetime strings into RFC3339 format.
+        Examples:
+            - "tomorrow at 3pm"
+            - "next Monday 10:00am"
+            - "2025-11-10T15:00:00Z"
+        """
+        if not dt_str:
+            raise ValueError("Missing datetime string")
+
+        # Try to parse natural language into a timezone-aware datetime
+        parsed = dateparser.parse(dt_str, settings={"RETURN_AS_TIMEZONE_AWARE": True})
+
+        if not parsed:
+            raise ValueError(f"Could not parse datetime: {dt_str}")
+
+        # Convert to UTC for consistency, or adjust based on tz_str
+        parsed_utc = parsed.astimezone(timezone.utc)
+        return parsed_utc.isoformat()
+
+    @staticmethod
     async def create_event(
         access_token: str,
         summary: str,
@@ -84,29 +108,19 @@ class GCalendarHelpers:
         timezone: str = "UTC",
     ) -> Dict[str, Any]:
         """
-        Create a calendar event.
-
-        Args:
-            access_token: User's Google Calendar access token
-            summary: Event title
-            start_time: Event start time (ISO 8601)
-            end_time: Event end time (ISO 8601)
-            calendar_id: Calendar ID (default: "primary")
-            description: Event description
-            location: Event location
-            attendees: List of attendee email addresses
-            timezone: Timezone for the event
-
-        Returns:
-            Dict with created event data
+        Create a calendar event. Accepts natural language or ISO-formatted times.
         """
         try:
             service = GCalendarHelpers._get_service(access_token)
 
+            # 🔹 Dynamically parse natural language or ISO times
+            parsed_start = GCalendarHelpers._parse_datetime(start_time, timezone)
+            parsed_end = GCalendarHelpers._parse_datetime(end_time, timezone)
+
             event = {
                 "summary": summary,
-                "start": {"dateTime": start_time, "timeZone": timezone},
-                "end": {"dateTime": end_time, "timeZone": timezone},
+                "start": {"dateTime": parsed_start, "timeZone": timezone},
+                "end": {"dateTime": parsed_end, "timeZone": timezone},
             }
 
             if description:
@@ -122,6 +136,8 @@ class GCalendarHelpers:
                     f"Skipping attendees — invalid or non-email format: {attendees}"
                 )
 
+            logger.info(f"Event payload: {json.dumps(event, indent=2)}")
+
             created_event = (
                 service.events().insert(calendarId=calendar_id, body=event).execute()
             )
@@ -131,6 +147,9 @@ class GCalendarHelpers:
         except HttpError as error:
             logger.error(f"Calendar API error creating event: {error}")
             return {"success": False, "error": str(error)}
+        except ValueError as ve:
+            logger.error(f"Invalid time input: {ve}")
+            return {"success": False, "error": str(ve)}
 
     @staticmethod
     async def get_event(
@@ -193,6 +212,8 @@ class GCalendarHelpers:
         """
         try:
             service = GCalendarHelpers._get_service(access_token)
+            parsed_start = GCalendarHelpers._parse_datetime(start_time, timezone)
+            parsed_end = GCalendarHelpers._parse_datetime(end_time, timezone)
 
             # Get existing event
             event = (
@@ -203,9 +224,9 @@ class GCalendarHelpers:
             if summary:
                 event["summary"] = summary
             if start_time:
-                event["start"] = {"dateTime": start_time, "timeZone": timezone}
+                event["start"] = {"dateTime": parsed_start, "timeZone": timezone}
             if end_time:
-                event["end"] = {"dateTime": end_time, "timeZone": timezone}
+                event["end"] = {"dateTime": parsed_end, "timeZone": timezone}
             if description:
                 event["description"] = description
             if location:
@@ -455,17 +476,13 @@ class GCalendarHelpers:
             calendar_id: Calendar ID (default: "primary")
 
         Returns:
-            Dict with free/busy information
+            Dict with free/busy information, including available times
         """
         try:
-            from datetime import datetime, timedelta
-
-            service = GCalendarHelpers._get_service(access_token)
-
             # Calculate time range
             now = datetime.utcnow()
             time_min = now.isoformat() + "Z"
-            time_max = (now + timedelta(days=days)).isoformat() + "Z"
+            time_max = (now + timedelta(days=int(days))).isoformat() + "Z"
 
             body = {
                 "timeMin": time_min,
@@ -473,15 +490,39 @@ class GCalendarHelpers:
                 "items": [{"id": calendar_id}],
             }
 
+            service = GCalendarHelpers._get_service(access_token)
             freebusy_result = service.freebusy().query(body=body).execute()
 
             calendars = freebusy_result.get("calendars", {})
             calendar_data = calendars.get(calendar_id, {})
             busy_times = calendar_data.get("busy", [])
 
+            # Calculate available times by finding gaps between busy times
+            available_times = []
+            if busy_times:
+                start_time = time_min
+
+                for busy_period in busy_times:
+                    busy_start = busy_period["start"]
+                    busy_end = busy_period["end"]
+
+                    # Check for availability before the current busy period
+                    if start_time < busy_start:
+                        available_times.append({"start": start_time, "end": busy_start})
+
+                    # Update the start_time to be after the current busy period
+                    start_time = busy_end
+
+                # Finally, check the remaining time after the last busy period
+                if start_time < time_max:
+                    available_times.append({"start": start_time, "end": time_max})
+            else:
+                available_times = [{"start": time_min, "end": time_max}]
+
             return {
                 "success": True,
                 "busy_times": busy_times,
+                "available_times": available_times,
                 "count": len(busy_times),
                 "days_ahead": days,
             }

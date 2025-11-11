@@ -754,6 +754,7 @@ async def app_chat_execute(request: AppChatExecuteRequest):
             data_fetch_plan=request.data_fetch_plan,
             actions=request.actions,
         )
+        logger.info(f"Execution result: {result}")
 
         if not result.get("success"):
             raise HTTPException(

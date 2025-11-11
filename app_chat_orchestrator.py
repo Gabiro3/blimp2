@@ -101,7 +101,7 @@ class AppChatOrchestrator:
         """
         try:
             app_name = data_fetch_plan["app"]
-            function_name = ""
+            function_name = data_fetch_plan["function"]
             if not data_fetch_plan["function"] and actions and len(actions) > 0:
                 function_name = actions[0].get("type")
                 if not app_name and actions[0].get("app"):
@@ -705,7 +705,7 @@ class AppChatOrchestrator:
                 return {"success": False, "error": "GEMINI_API_KEY not configured"}
 
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-2.0-flash-exp")
+            model = genai.GenerativeModel("gemini-2.0-flash")
 
             prompt = f"""You are a research assistant. Generate comprehensive, well-researched content about the following topic:
 

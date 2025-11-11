@@ -670,6 +670,7 @@ class SupabaseService:
                         "refresh_token": refresh_token,
                         "grant_type": "refresh_token",
                     }
+                    logger.info(f"Refreshing token for {app_name} at {payload}")
 
                     response = await client.post(token_endpoint, data=payload)
 
@@ -680,6 +681,7 @@ class SupabaseService:
                         return None
 
                     token_data = response.json()
+                    logger.info(f"Token refresh response for {app_name}: {token_data}")
                     new_access_token = token_data.get("access_token")
                     new_refresh_token = token_data.get("refresh_token", refresh_token)
                     expires_in = token_data.get("expires_in", 3600)

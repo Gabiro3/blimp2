@@ -11,6 +11,7 @@ import os
 
 from services.supabase_service import SupabaseService
 from function_registry import get_functions_for_apps
+from services.gemini_service import GeminiService
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +21,11 @@ class MultiAppOrchestrator:
 
     def __init__(self, supabase_service: SupabaseService):
         self.supabase = supabase_service
+        self.gemini_service = GeminiService()
         self.api_key = os.getenv("GEMINI_API_KEY")
         if self.api_key:
             genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel("gemini-2.0-flash-exp")
+            self.model = genai.GenerativeModel("gemini-2.0-flash")
         else:
             self.model = None
 
@@ -155,7 +157,7 @@ Respond in JSON format with:
 }}
 """
 
-            response = self.model.generate_content(
+            response = self.gemini_service.generate_content(
                 [system_prompt, user_message],
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.3, response_mime_type="application/json"
