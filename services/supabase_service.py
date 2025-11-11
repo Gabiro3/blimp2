@@ -103,20 +103,6 @@ class SupabaseService:
             if response.data:
                 return response.data
 
-            # Try user_workflows
-            response = (
-                self.client.table("user_workflows")
-                .select("*")
-                .eq("id", workflow_id)
-                .eq("user_id", user_id)
-                .eq("is_active", True)
-                .single()
-                .execute()
-            )
-
-            if response.data:
-                return response.data
-
             return None
 
         except Exception as e:
