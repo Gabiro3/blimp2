@@ -6,6 +6,7 @@ Coordinates data fetching and AI response generation for app chat
 import logging
 from typing import Dict, Any, List, Optional
 
+from helpers.notion_helpers import NotionHelpers
 from services.supabase_service import SupabaseService
 from services.app_chat_service import AppChatService
 from services.security_filter import SecurityFilter
@@ -71,6 +72,7 @@ class AppChatOrchestrator:
 
             return {
                 "success": True,
+                "query_type": analysis_result.get("query_type", "informational"),
                 "data_fetch_plan": analysis_result["data_fetch_plan"],
                 "actions": analysis_result.get("actions", []),
                 "reasoning": analysis_result.get("reasoning"),
@@ -84,6 +86,7 @@ class AppChatOrchestrator:
         self,
         user_id: str,
         query: str,
+        query_type: str,
         data_fetch_plan: Dict[str, Any],
         actions: List[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -161,6 +164,8 @@ class AppChatOrchestrator:
                 fetched_data=filtered_items,
                 data_type=data_type,
                 inquiry_app=app_name,
+                query_type=query_type,
+                actions_taken=action_results,
             )
 
             if not response_result.get("success"):
@@ -433,9 +438,26 @@ class AppChatOrchestrator:
         return "unknown", []
 
     async def _execute_actions(
-        self, user_id: str, actions: List[Dict[str, Any]], credentials: Dict[str, Any]
+        self,
+        user_id: str,
+        actions: List[Dict[str, Any]],
+        credentials: Dict[str, Any],
+        fetched_data: List[Dict[str, Any]] = None,
+        query_type: str = "actionable",
     ) -> List[Dict[str, Any]]:
-        """Execute actions like sending messages"""
+        """
+        Execute actions like sending messages, creating events, etc.
+
+        Args:
+            user_id: User ID
+            actions: List of actions to execute
+            credentials: User credentials
+            fetched_data: Data fetched in previous step (for conditional actions)
+            query_type: Type of query (to determine if conditional check needed)
+
+        Returns:
+            List of action results
+        """
 
         results = []
 
@@ -443,24 +465,170 @@ class AppChatOrchestrator:
             try:
                 action_type = action.get("type")
                 app_name = action.get("app")
+                function_name = action.get("function")
                 parameters = action.get("parameters", {})
+                condition = action.get("condition")
 
-                if action_type == "send_message" and app_name.lower() == "gmail":
-                    result = await GmailHelpers.send_message(
-                        access_token=credentials.get("access_token"),
-                        credentials=credentials,
-                        **parameters,
-                    )
-                    results.append(
-                        {
-                            "action": action_type,
-                            "app": app_name,
-                            "success": result.get("success"),
-                            "description": action.get("description"),
-                        }
-                    )
+                if condition == "only_if_available" and query_type == "conditional":
+                    # Check if user is available based on fetched calendar data
+                    if fetched_data and len(fetched_data) > 0:
+                        # User has events in the requested time slot - NOT available
+                        logger.info(
+                            f"Conditional action skipped: User has {len(fetched_data)} conflicting events"
+                        )
+                        results.append(
+                            {
+                                "action": action_type,
+                                "app": app_name,
+                                "success": False,
+                                "skipped": True,
+                                "reason": "Time slot not available - conflicts found",
+                                "description": action.get("description"),
+                            }
+                        )
+                        continue
+                    else:
+                        # User is available - proceed with action
+                        logger.info("Conditional action proceeding: User is available")
 
-                # Add more action types as needed
+                # Execute the action based on app
+                if app_name.lower() == "gmail":
+                    helper = GmailHelpers()
+                    func = getattr(helper, function_name, None)
+                    if func:
+                        result = await func(
+                            access_token=credentials.get("access_token"),
+                            credentials=credentials,
+                            **parameters,
+                        )
+                        results.append(
+                            {
+                                "action": action_type,
+                                "app": app_name,
+                                "success": result.get("success"),
+                                "description": action.get("description"),
+                                "result": result,
+                            }
+                        )
+
+                elif app_name.lower() == "slack":
+                    helper = SlackHelpers()
+                    func = getattr(helper, function_name, None)
+                    if func:
+                        result = await func(
+                            access_token=credentials.get("access_token"), **parameters
+                        )
+                        results.append(
+                            {
+                                "action": action_type,
+                                "app": app_name,
+                                "success": result.get("success"),
+                                "description": action.get("description"),
+                                "result": result,
+                            }
+                        )
+                elif app_name.lower() == "notion":
+                    helper = NotionHelpers()
+                    func = getattr(helper, function_name, None)
+                    if func:
+                        result = await func(
+                            access_token=credentials.get("access_token"), **parameters
+                        )
+                        results.append(
+                            {
+                                "action": action_type,
+                                "app": app_name,
+                                "success": result.get("success"),
+                                "description": action.get("description"),
+                                "result": result,
+                            }
+                        )
+                elif app_name.lower() == "github":
+                    helper = GitHubHelpers()
+                    func = getattr(helper, function_name, None)
+                    if func:
+                        result = await func(
+                            access_token=credentials.get("access_token"), **parameters
+                        )
+                        results.append(
+                            {
+                                "action": action_type,
+                                "app": app_name,
+                                "success": result.get("success"),
+                                "description": action.get("description"),
+                                "result": result,
+                            }
+                        )
+
+                elif app_name.lower() == "trello":
+                    helper = TrelloHelpers()
+                    func = getattr(helper, function_name, None)
+                    if func:
+                        result = await func(
+                            access_token=credentials.get("access_token"), **parameters
+                        )
+                        results.append(
+                            {
+                                "action": action_type,
+                                "app": app_name,
+                                "success": result.get("success"),
+                                "description": action.get("description"),
+                                "result": result,
+                            }
+                        )
+
+                elif app_name.lower() == "google_calendar":
+                    helper = GCalendarHelpers()
+                    func = getattr(helper, function_name, None)
+                    if func:
+                        result = await func(
+                            access_token=credentials.get("access_token"), **parameters
+                        )
+                        results.append(
+                            {
+                                "action": action_type,
+                                "app": app_name,
+                                "success": result.get("success"),
+                                "description": action.get("description"),
+                                "result": result,
+                            }
+                        )
+
+                elif app_name.lower() == "google_drive":
+                    helper = GDriveHelpers()
+                    func = getattr(helper, function_name, None)
+                    if func:
+                        result = await func(
+                            access_token=credentials.get("access_token"), **parameters
+                        )
+                        results.append(
+                            {
+                                "action": action_type,
+                                "app": app_name,
+                                "success": result.get("success"),
+                                "description": action.get("description"),
+                                "result": result,
+                            }
+                        )
+
+                elif app_name.lower() == "google_docs":
+                    helper = GoogleDocsHelpers()
+                    func = getattr(helper, function_name, None)
+                    if func:
+                        result = await func(
+                            access_token=credentials.get("access_token"),
+                            credentials=credentials,
+                            **parameters,
+                        )
+                        results.append(
+                            {
+                                "action": action_type,
+                                "app": app_name,
+                                "success": result.get("success"),
+                                "description": action.get("description"),
+                                "result": result,
+                            }
+                        )
 
             except Exception as e:
                 logger.error(f"Error executing action: {str(e)}", exc_info=True)

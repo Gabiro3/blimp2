@@ -70,38 +70,150 @@ class AppChatService:
 
             # Build user message
             user_message = f"""
-User Query: {query}
+User Query: "{query}"
 
-Analyze this query and determine:
-1. What data needs to be fetched from {inquiry_app}?
-2. Which helper functions should be called?
-3. What parameters should be used?
-4. Should any actions be taken (e.g., send a reply)?
+TASK: Analyze this query and determine the appropriate response strategy.
 
-Respond STRICTLY in this JSON structure — never omit or rename any key:
+IMPORTANT RULES:
+1. If the query is INFORMATIONAL (asking for data), return a data_fetch_plan
+2. If the query is ACTIONABLE (creating, sending, scheduling something), return an actions list
+3. If the query is BOTH (e.g., "check if I'm free, then schedule a meeting"), return BOTH data_fetch_plan AND actions
+4. ONLY use functions that exist in the available_functions registry provided in the system prompt
+5. Ensure ALL required parameters for each function are included
+6. Use proper data types for parameters (strings, numbers, booleans, lists)
+
+RESPONSE FORMAT:
+Return a valid JSON object with this EXACT structure:
 
 {{
+    "query_type": "informational" | "actionable" | "conditional",
     "data_fetch_plan": {{
         "app": "app_name",
-        "function": "send_message" or "create_event" etc.,   // Always include this key
-        "parameters": {{}},
+        "function": "exact_function_name_from_registry",
+        "parameters": {{
+            "param1": "value1",
+            "param2": "value2"
+        }},
         "description": "what data this will fetch"
     }},
     "actions": [
         {{
-            "type": "send_message" or "create_event" etc.,
+            "type": "action_type",
             "app": "app_name",
-            "parameters": {{}},
-            "description": "what this action does"
+            "function": "exact_function_name_from_registry",
+            "parameters": {{
+                "param1": "value1"
+            }},
+            "description": "what this action does",
+            "condition": "only include if action is conditional based on fetched data"
         }}
     ],
-    "reasoning": "explanation of the plan"
+    "reasoning": "step-by-step explanation of your analysis"
 }}
 
-⚠️ Rules:
-- Always include the "function" key in data_fetch_plan, even if its value is "none" or "unknown".
-- Never omit required keys or return plain text.
-- The JSON must be valid and parseable.
+QUERY TYPE DEFINITIONS:
+- "informational": User is asking for information (e.g., "What emails did I get from John?")
+- "actionable": User wants to create/send/schedule something (e.g., "Schedule a meeting with Sonia tomorrow at 3PM")
+- "conditional": User wants to check something THEN take action (e.g., "Am I free tomorrow 2-4pm? If yes, schedule meeting with Kevin")
+
+EXAMPLES:
+
+Example 1 - Simple Actionable Query:
+User: "Schedule a calendar meeting with Sonia tomorrow 3PM @Google Calendar"
+Response:
+{{
+    "query_type": "actionable",
+    "data_fetch_plan": [],
+    "actions": [
+        {{
+            "type": "create_event",
+            "app": "google_calendar",
+            "function": "create_event",
+            "parameters": {{
+                "summary": "Meeting with Sonia",
+                "start_time": "2025-01-16T15:00:00Z",
+                "end_time": "2025-01-16T16:00:00Z",
+                "attendees": ["sonia@example.com"]
+            }},
+            "description": "Create a calendar event for meeting with Sonia tomorrow at 3PM"
+        }}
+    ],
+    "reasoning": "User explicitly wants to schedule a meeting. This is a pure action request, no data fetching needed. Using create_event function with Sonia as attendee and tomorrow 3PM as time."
+}}
+
+Example 2 - Informational Query:
+User: "Show me emails from Simon about funding"
+Response:
+{{
+    "query_type": "informational",
+    "data_fetch_plan": {{
+        "app": "gmail",
+        "function": "list_messages",
+        "parameters": {{
+            "query": "from:simon subject:funding",
+            "max_results": 10
+        }},
+        "description": "Fetch emails from Simon that contain 'funding' in subject"
+    }},
+    "actions": [],
+    "reasoning": "User is requesting information about existing emails. Using list_messages with Gmail query syntax to filter by sender (from:simon) and subject (subject:funding)."
+}}
+
+Example 3 - Conditional Query (Check Then Act):
+User: "Am I available tomorrow from 2 to 4pm? if yes, schedule a meeting with Kevin @Google Calendar"
+Response:
+{{
+    "query_type": "conditional",
+    "data_fetch_plan": {{
+        "app": "google_calendar",
+        "function": "list_events",
+        "parameters": {{
+            "time_min": "2025-01-16T14:00:00Z",
+            "time_max": "2025-01-16T16:00:00Z",
+            "max_results": 10
+        }},
+        "description": "Check calendar for conflicts between 2-4PM tomorrow"
+    }},
+    "actions": [
+        {{
+            "type": "create_event",
+            "app": "google_calendar",
+            "function": "create_event",
+            "parameters": {{
+                "summary": "Meeting with Kevin",
+                "start_time": "2025-01-16T14:00:00Z",
+                "end_time": "2025-01-16T16:00:00Z",
+                "attendees": ["kevin@example.com"]
+            }},
+            "description": "Create meeting with Kevin if no conflicts found",
+            "condition": "only_if_available"
+        }}
+    ],
+    "reasoning": "User wants to check availability first, then conditionally create a meeting. First, fetch events in the 2-4PM tomorrow timeframe. If no conflicts exist, then create the meeting with Kevin. The orchestrator will handle the conditional logic."
+}}
+
+Example 4 - Send Slack Message:
+User: "Send a message to #engineering saying 'Deploy is ready'"
+Response:
+{{
+    "query_type": "actionable",
+    "data_fetch_plan": [],
+    "actions": [
+        {{
+            "type": "send_message",
+            "app": "slack",
+            "function": "send_message",
+            "parameters": {{
+                "channel": "#engineering",
+                "message": "Deploy is ready"
+            }},
+            "description": "Send message to engineering channel"
+        }}
+    ],
+    "reasoning": "User wants to send a Slack message. This is a direct action with no data fetching required. Using send_message function with channel and message text."
+}}
+
+NOW ANALYZE THE USER'S QUERY AND RESPOND WITH VALID JSON:
 """
 
             # Call Gemini
@@ -174,6 +286,8 @@ Respond STRICTLY in this JSON structure — never omit or rename any key:
         data_type: str,
         inquiry_app: str = None,
         context: Optional[Dict[str, Any]] = None,
+        query_type: str = "informational",
+        actions_taken: List[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Generate AI response based on fetched data
@@ -197,47 +311,61 @@ Respond STRICTLY in this JSON structure — never omit or rename any key:
                 inquiry_app, data_type
             )
 
-            # Build user message
-            # Build user message
-            user_message = f"""
-            You are an intelligent AI assistant integrated with various user apps (like Google Drive, Gmail, Google Calendar, Slack, etc.).
+            # Build user message based on query type
+            if query_type == "actionable" and actions_taken:
+                # For pure actions, focus on confirming what was done
+                user_message = f"""
+User Query: "{query}"
+Query Type: {query_type}
 
-            User Query:
-            {query}
+Actions Taken:
+{json.dumps(actions_taken, indent=2)}
 
-            Fetched Data ({data_type}):
-            {json.dumps(fetched_data, indent=2)}
+TASK: Generate a confirmation response for the user.
 
-            Additional Context: {json.dumps(context) if context else "None"}
+RESPONSE REQUIREMENTS:
+1. Confirm the action was completed successfully
+2. Include specific details (e.g., "Meeting scheduled for tomorrow at 3PM with Sonia")
+3. Keep it concise and friendly
+4. Set "actionable_insights" to "action_completed" since this was an action
 
-            Your job:
-            1. **First**, identify whether the user's query is a "search/information request" or an "action/execution request".  
-            - **Search request examples:** "Find my upcoming meetings", "Show recent files", "List unread emails".
-            - **Action request examples:** "Create a folder", "Schedule a meeting", "Send an email", "Delete an event".
+Respond in this JSON format:
+{{
+    "answer": "Confirmation message with specific details",
+    "confidence": "high",
+    "data_found": true,
+    "relevant_items": [],
+    "actionable_insights": "action_completed",
+    "suggested_actions": []
+}}
+"""
+            else:
+                # For informational or conditional queries
+                user_message = f"""
+User Query: "{query}"
+Query Type: {query_type}
 
-            2. **If it’s a search/information request**:
-            - Summarize the fetched data meaningfully.
-            - Indicate confidence, whether data was found, and include relevant items or links.
+Fetched Data ({data_type}):
+{json.dumps(fetched_data, indent=2)}
 
-            3. **If it’s an action/execution request**:
-            - Assume the action has been successfully performed (unless data clearly shows an error).
-            - Respond *as if* you confirmed completion, e.g.:
-                - "The folder 'Project X Docs' has been created successfully in Google Drive."
-                - "Your meeting has been scheduled for tomorrow from 2–4 PM."
-                - "The email was sent successfully to John."
-            - Avoid phrases like “No data found” or “empty list” for successful actions.
-            - Include any relevant metadata (IDs, times, confirmations) if available in fetched_data or context.
+Actions Taken:
+{json.dumps(actions_taken, indent=2) if actions_taken else "None"}
 
-            4. Always return your response as a structured JSON object:
-            {{
-            "answer": "...",
-            "confidence": "high" | "medium" | "low",
-            "data_found": true | false,
-            "relevant_items": [...],
-            "resource_urls": [...],
-            "suggested_actions": [...]
-            }}
-            """
+Additional Context: {json.dumps(context) if context else "None"}
+
+TASK: Generate a comprehensive response based on the data and any actions taken.
+
+RESPONSE REQUIREMENTS:
+1. Answer the user's question directly with specific details
+2. Reference the fetched data explicitly (dates, names, subjects, etc.)
+3. If actions were taken, confirm them
+4. If this was a conditional query and action was taken, explain why
+5. Include relevant_items with proper IDs for linking
+6. Set "actionable_insights" to "action_completed" if actions were successfully taken
+7. Suggest next steps if appropriate
+
+Respond in JSON format as specified in the system prompt.
+"""
 
             # Call Gemini
             response = self.gemini_service.generate_content(
