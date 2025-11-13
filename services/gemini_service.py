@@ -105,6 +105,8 @@ class GeminiService:
                 # Check for 402 resource exhausted error
                 if (
                     "429" in error_str
+                    or "403" in error_str
+                    or "Your API key was reported as leaked"
                     or "Resource exhausted" in error_str
                     or "quota" in error_str.lower()
                 ):

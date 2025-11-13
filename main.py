@@ -153,11 +153,13 @@ class AppChatPromptResponse(BaseModel):
     actions: List[Dict[str, Any]]
     reasoning: str
     message: str
+    query_type: Optional[str] = "informational"
 
 
 class AppChatExecuteRequest(BaseModel):
     user_id: str
     query: str
+    query_type: str  # informational, action-oriented
     data_fetch_plan: Optional[Dict[str, Any]] = None
     actions: Optional[List[Dict[str, Any]]] = None
 
@@ -722,6 +724,7 @@ async def app_chat_prompt(request: AppChatPromptRequest):
             actions=result.get("actions", []),
             reasoning=result.get("reasoning", ""),
             message="Query analyzed successfully. Ready to fetch data.",
+            query_type=result.get("query_type", "informational"),
         )
 
     except HTTPException:
@@ -749,6 +752,7 @@ async def app_chat_execute(request: AppChatExecuteRequest):
 
         # Execute query with orchestrator
         result = await app_chat_orchestrator.execute_query(
+            query_type=request.query_type,
             user_id=request.user_id,
             query=request.query,
             data_fetch_plan=request.data_fetch_plan,

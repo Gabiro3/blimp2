@@ -8,6 +8,8 @@ import logging
 import json
 from typing import Dict, Any, List, Optional
 import google.generativeai as genai
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from helpers.gmail_helpers import GMAIL_FUNCTIONS
 from helpers.google_docs_helpers import GOOGLE_DOCS_FUNCTIONS
@@ -41,18 +43,11 @@ class AppChatService:
         return self.model is not None
 
     async def analyze_query(
-        self, query: str, inquiry_app: str, connected_apps: List[str]
+        self, query: str, inquiry_app: str, connected_apps: List[str], user_id: str
     ) -> Dict[str, Any]:
         """
-        Analyze user query and determine what data to fetch
-
-        Args:
-            query: User's question/request
-            inquiry_app: Primary app to query (gmail, slack, gcalendar)
-            connected_apps: List of user's connected apps
-
-        Returns:
-            Dict with data fetching plan
+        Analyze user query and determine what data to fetch,
+        with automatic detection of the user's timezone for time-specific reasoning.
         """
         try:
             if not self.model:
@@ -61,222 +56,83 @@ class AppChatService:
             # Get available functions for the inquiry app
             available_functions = self._get_app_functions(inquiry_app)
 
-            # Build system prompt
-            system_prompt = self._build_query_analysis_prompt(
+            # 🕒 Detect user's timezone (fallback to UTC)
+            try:
+                user_profile = await self.supabase_service.get_user_profile(user_id)
+                user_timezone = (
+                    user_profile.get("timezone")
+                    if user_profile and user_profile.get("timezone")
+                    else "UTC"
+                )
+            except Exception:
+                user_timezone = "UTC"
+
+            try:
+                local_tz = ZoneInfo(user_timezone)
+            except Exception:
+                self.logger.warning(
+                    f"Invalid timezone '{user_timezone}', falling back to UTC"
+                )
+                local_tz = timezone.utc
+
+            now_local = datetime.now(local_tz)
+            now_utc = now_local.astimezone(timezone.utc)
+
+            # Build current datetime context for the model
+            current_context = f"""
+    CURRENT DATE/TIME CONTEXT:
+    - User Timezone: {user_timezone}
+    - Local Time: {now_local.strftime('%Y-%m-%d %H:%M:%S %Z')}
+    - UTC Time: {now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')}
+    - Day of Week: {now_local.strftime('%A')}
+    - Today is {now_local.strftime('%B %d, %Y')}
+    """
+
+            # Build system prompt with temporal context
+            system_prompt = f"""{self._build_query_analysis_prompt(
                 inquiry_app=inquiry_app,
                 available_functions=available_functions,
                 connected_apps=connected_apps,
-            )
+            )}
+
+    {current_context}
+
+    If the user's query includes relative time expressions (e.g., "tomorrow", "next week", "later today"),
+    resolve them based on the user's local timezone and convert to ISO 8601 UTC format (e.g., 2025-11-14T15:00:00Z).
+    """
 
             # Build user message
             user_message = f"""
-User Query: "{query}"
+    User Query: "{query}"
 
-TASK: Analyze this query and determine the appropriate response strategy.
+    TASK: Analyze this query and determine the appropriate response strategy.
 
-IMPORTANT RULES:
-1. If the query is INFORMATIONAL (asking for data), return a data_fetch_plan
-2. If the query is ACTIONABLE (creating, sending, scheduling something), return an actions list
-3. If the query is BOTH (e.g., "check if I'm free, then schedule a meeting"), return BOTH data_fetch_plan AND actions
-4. ONLY use functions that exist in the available_functions registry provided in the system prompt
-5. Ensure ALL required parameters for each function are included
-6. Use proper data types for parameters (strings, numbers, booleans, lists)
+    IMPORTANT RULES:
+    1. Resolve all relative time references using the user's timezone ({user_timezone}).
+    2. When specifying any datetime in the output, always return it in ISO 8601 UTC format.
+    3. Follow all structural and functional instructions from the system prompt.
 
-RESPONSE FORMAT:
-Return a valid JSON object with this EXACT structure:
+    RESPONSE FORMAT:
+    <your JSON schema as before>
+    """
 
-{{
-    "query_type": "informational" | "actionable" | "conditional",
-    "data_fetch_plan": {{
-        "app": "app_name",
-        "function": "exact_function_name_from_registry",
-        "parameters": {{
-            "param1": "value1",
-            "param2": "value2"
-        }},
-        "description": "what data this will fetch"
-    }},
-    "actions": [
-        {{
-            "type": "action_type",
-            "app": "app_name",
-            "function": "exact_function_name_from_registry",
-            "parameters": {{
-                "param1": "value1"
-            }},
-            "description": "what this action does",
-            "condition": "only include if action is conditional based on fetched data"
-        }}
-    ],
-    "reasoning": "step-by-step explanation of your analysis"
-}}
-
-QUERY TYPE DEFINITIONS:
-- "informational": User is asking for information (e.g., "What emails did I get from John?")
-- "actionable": User wants to create/send/schedule something (e.g., "Schedule a meeting with Sonia tomorrow at 3PM")
-- "conditional": User wants to check something THEN take action (e.g., "Am I free tomorrow 2-4pm? If yes, schedule meeting with Kevin")
-
-EXAMPLES:
-
-Example 1 - Simple Actionable Query:
-User: "Schedule a calendar meeting with Sonia tomorrow 3PM @Google Calendar"
-Response:
-{{
-    "query_type": "actionable",
-    "data_fetch_plan": [],
-    "actions": [
-        {{
-            "type": "create_event",
-            "app": "google_calendar",
-            "function": "create_event",
-            "parameters": {{
-                "summary": "Meeting with Sonia",
-                "start_time": "2025-01-16T15:00:00Z",
-                "end_time": "2025-01-16T16:00:00Z",
-                "attendees": ["sonia@example.com"]
-            }},
-            "description": "Create a calendar event for meeting with Sonia tomorrow at 3PM"
-        }}
-    ],
-    "reasoning": "User explicitly wants to schedule a meeting. This is a pure action request, no data fetching needed. Using create_event function with Sonia as attendee and tomorrow 3PM as time."
-}}
-
-Example 2 - Informational Query:
-User: "Show me emails from Simon about funding"
-Response:
-{{
-    "query_type": "informational",
-    "data_fetch_plan": {{
-        "app": "gmail",
-        "function": "list_messages",
-        "parameters": {{
-            "query": "from:simon subject:funding",
-            "max_results": 10
-        }},
-        "description": "Fetch emails from Simon that contain 'funding' in subject"
-    }},
-    "actions": [],
-    "reasoning": "User is requesting information about existing emails. Using list_messages with Gmail query syntax to filter by sender (from:simon) and subject (subject:funding)."
-}}
-
-Example 3 - Conditional Query (Check Then Act):
-User: "Am I available tomorrow from 2 to 4pm? if yes, schedule a meeting with Kevin @Google Calendar"
-Response:
-{{
-    "query_type": "conditional",
-    "data_fetch_plan": {{
-        "app": "google_calendar",
-        "function": "list_events",
-        "parameters": {{
-            "time_min": "2025-01-16T14:00:00Z",
-            "time_max": "2025-01-16T16:00:00Z",
-            "max_results": 10
-        }},
-        "description": "Check calendar for conflicts between 2-4PM tomorrow"
-    }},
-    "actions": [
-        {{
-            "type": "create_event",
-            "app": "google_calendar",
-            "function": "create_event",
-            "parameters": {{
-                "summary": "Meeting with Kevin",
-                "start_time": "2025-01-16T14:00:00Z",
-                "end_time": "2025-01-16T16:00:00Z",
-                "attendees": ["kevin@example.com"]
-            }},
-            "description": "Create meeting with Kevin if no conflicts found",
-            "condition": "only_if_available"
-        }}
-    ],
-    "reasoning": "User wants to check availability first, then conditionally create a meeting. First, fetch events in the 2-4PM tomorrow timeframe. If no conflicts exist, then create the meeting with Kevin. The orchestrator will handle the conditional logic."
-}}
-
-Example 4 - Send Slack Message:
-User: "Send a message to #engineering saying 'Deploy is ready'"
-Response:
-{{
-    "query_type": "actionable",
-    "data_fetch_plan": [],
-    "actions": [
-        {{
-            "type": "send_message",
-            "app": "slack",
-            "function": "send_message",
-            "parameters": {{
-                "channel": "#engineering",
-                "message": "Deploy is ready"
-            }},
-            "description": "Send message to engineering channel"
-        }}
-    ],
-    "reasoning": "User wants to send a Slack message. This is a direct action with no data fetching required. Using send_message function with channel and message text."
-}}
-
-NOW ANALYZE THE USER'S QUERY AND RESPOND WITH VALID JSON:
-"""
-
-            # Call Gemini
-            response = self.gemini_service.generate_content(
-                prompt=user_message,
-                system_instruction=system_prompt,
-                temperature=0.3,
-                response_format="json",
+            # Call the model
+            response = await self.model.chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ]
             )
 
-            # Parse response
-            logger.info(f"Gemini response: {response}")
-            result = json.loads(response["content"])
-            logger.info(f"Query analysis: {result.get('reasoning')}")
-            data_fetch_plan = result.get("data_fetch_plan", {})
-            actions = result.get("actions", [])
-
-            # --- 🧠 Smart correction logic ---
-            # If the function is "none" or missing, try to replace it with the first action type
-            if (
-                not data_fetch_plan.get("function")
-                or str(data_fetch_plan.get("function")).lower() == "none"
-            ):
-                if actions and actions[0].get("type"):
-                    default_function = actions[0]["type"]
-                    logger.info(
-                        f"No function returned; using default function from action type: {default_function}"
-                    )
-                    data_fetch_plan["function"] = default_function
-                else:
-                    logger.warning(
-                        "No function or actions provided — cannot infer default function."
-                    )
-            # 2️⃣ Fix missing or empty parameters
-            if not data_fetch_plan.get("parameters"):
-                # Try to find a matching action (by app or type)
-                matching_action = None
-                for action in actions:
-                    if action.get("app") == data_fetch_plan.get("app") or action.get(
-                        "type"
-                    ) == data_fetch_plan.get("function"):
-                        matching_action = action
-                        break
-
-                if matching_action and matching_action.get("parameters"):
-                    logger.info(
-                        f"No parameters in data_fetch_plan; using parameters from matching action '{matching_action.get('type')}'."
-                    )
-                    data_fetch_plan["parameters"] = matching_action["parameters"]
-                else:
-                    logger.warning(
-                        "No suitable action found to fill missing parameters."
-                    )
-
-            return {
-                "success": True,
-                "data_fetch_plan": data_fetch_plan,
-                "actions": actions,
-                "reasoning": result.get("reasoning"),
-            }
+            parsed = self._safe_json_parse(response.content)
+            return (
+                {"success": True, **parsed}
+                if parsed
+                else {"success": False, "error": "Invalid response from model"}
+            )
 
         except Exception as e:
-            logger.error(f"Error analyzing query: {str(e)}", exc_info=True)
+            self.logger.error(f"Error analyzing query: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     async def generate_response(

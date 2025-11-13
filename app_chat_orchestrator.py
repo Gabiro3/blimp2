@@ -159,6 +159,11 @@ class AppChatOrchestrator:
             logger.info(f"Fetched {len(filtered_items)} {data_type}(s) from {app_name}")
 
             # Generate AI response
+            action_results = []
+            if actions:
+                action_results = await self._execute_actions(
+                    user_id=user_id, actions=actions, credentials=credentials
+                )
             response_result = await self.app_chat_service.generate_response(
                 query=query,
                 fetched_data=filtered_items,
@@ -170,13 +175,6 @@ class AppChatOrchestrator:
 
             if not response_result.get("success"):
                 return response_result
-
-            # Execute actions if any
-            action_results = []
-            if actions:
-                action_results = await self._execute_actions(
-                    user_id=user_id, actions=actions, credentials=credentials
-                )
 
             # Build resource URLs
             resource_urls = self._build_resource_urls(

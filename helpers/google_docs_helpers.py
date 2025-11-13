@@ -1,6 +1,14 @@
 """
 Google Docs helper functions using Google API Python Client.
 Provides CRUD operations for Google Docs documents, content manipulation, etc.
+
+IMPORTANT: This module uses the 'drive.file' OAuth scope (https://www.googleapis.com/auth/drive.file)
+instead of the restricted 'drive' and 'documents' scopes. This means the app can only access:
+1. Documents created by the app
+2. Documents explicitly opened/selected by the user via Google Picker
+
+This is a non-restricted scope that doesn't require security assessment.
+Google Docs are stored in Drive, so drive.file scope provides both Docs API and Drive API access.
 """
 
 from typing import Dict, List, Any, Optional
@@ -15,7 +23,15 @@ logger = logging.getLogger(__name__)
 
 
 class GoogleDocsHelpers:
-    """Helper class for Google Docs operations."""
+    """
+    Helper class for Google Docs operations using drive.file scope.
+
+    Scope: https://www.googleapis.com/auth/drive.file
+    - Can create new documents
+    - Can only access documents created by this app or explicitly selected by user
+    - No verification required (non-restricted scope)
+    - Works for both Docs API and Drive API operations on documents
+    """
 
     @staticmethod
     def _get_service(credentials_dict: Dict[str, Any]):
@@ -47,6 +63,8 @@ class GoogleDocsHelpers:
     ) -> List[Dict[str, Any]]:
         """
         Parse markdown content and convert to Google Docs API requests.
+
+        Converts markdown formatting (headers, bold) to proper Google Docs formatting.
 
         Args:
             content: Markdown formatted content
@@ -169,7 +187,11 @@ class GoogleDocsHelpers:
         credentials: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Search for Google Docs documents.
+        Search for Google Docs documents accessible to this app.
+
+        With drive.file scope, only returns documents that were:
+        - Created by this app, OR
+        - Explicitly selected by user via Google Picker
 
         Args:
             access_token: User's access token (deprecated)
@@ -224,10 +246,12 @@ class GoogleDocsHelpers:
         """
         Create a new Google Docs document.
 
+        Documents created via this method are automatically accessible with drive.file scope.
+
         Args:
             access_token: User's access token (deprecated)
             title: Document title
-            content: Initial document content (supports markdown)
+            content: Initial document content (supports markdown - ##, ###, **)
             credentials: Full OAuth credentials
 
         Returns:
@@ -276,10 +300,12 @@ class GoogleDocsHelpers:
         """
         Append content to a Google Docs document.
 
+        Can only append to documents created by this app or explicitly granted access to.
+
         Args:
             access_token: User's access token (deprecated)
             document_id: ID of the document
-            content: Content to append (supports markdown)
+            content: Content to append (supports markdown - ##, ###, **)
             credentials: Full OAuth credentials
 
         Returns:
@@ -331,6 +357,8 @@ class GoogleDocsHelpers:
         """
         Get full content of a Google Docs document.
 
+        Can only access documents created by this app or explicitly granted access to.
+
         Args:
             access_token: User's access token (deprecated)
             document_id: ID of the document
@@ -377,6 +405,8 @@ class GoogleDocsHelpers:
     ) -> Dict[str, Any]:
         """
         Share a Google Docs document with someone.
+
+        Can only share documents created by this app or explicitly granted access to.
 
         Args:
             access_token: User's access token (deprecated)
@@ -425,6 +455,9 @@ class GoogleDocsHelpers:
         """
         Get comments from a Google Docs document.
 
+        Can only access comments from documents created by this app
+        or explicitly granted access to.
+
         Args:
             access_token: User's access token (deprecated)
             document_id: ID of the document
@@ -472,7 +505,10 @@ class GoogleDocsHelpers:
         credentials: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Get user's recently modified documents.
+        Get user's recently modified documents accessible to this app.
+
+        With drive.file scope, only returns documents created by app
+        or explicitly selected by user.
 
         Args:
             access_token: User's access token (deprecated)
@@ -514,7 +550,7 @@ class GoogleDocsHelpers:
 GOOGLE_DOCS_FUNCTIONS = {
     "search_documents": {
         "name": "search_documents",
-        "description": "Search for Google Docs documents by name or content",
+        "description": "Search for Google Docs documents accessible to this app (created by app or selected by user)",
         "parameters": {
             "query": "Search query for document names",
             "max_results": "Maximum number of results (default: 10)",
@@ -522,28 +558,28 @@ GOOGLE_DOCS_FUNCTIONS = {
     },
     "create_document": {
         "name": "create_document",
-        "description": "Create a new Google Docs document",
+        "description": "Create a new Google Docs document (will be accessible to app)",
         "parameters": {
             "title": "Document title",
-            "content": "Initial document content (optional)",
+            "content": "Initial document content with markdown support (optional)",
         },
     },
     "append_to_document": {
         "name": "append_to_document",
-        "description": "Append content to an existing document",
+        "description": "Append content to an existing document (only documents accessible to app)",
         "parameters": {
             "document_id": "ID of the document",
-            "content": "Content to append",
+            "content": "Content to append with markdown support",
         },
     },
     "get_document_content": {
         "name": "get_document_content",
-        "description": "Get the full content of a Google Docs document",
+        "description": "Get the full content of a Google Docs document (only documents accessible to app)",
         "parameters": {"document_id": "ID of the document"},
     },
     "share_document": {
         "name": "share_document",
-        "description": "Share a Google Docs document with someone",
+        "description": "Share a Google Docs document with someone (only documents accessible to app)",
         "parameters": {
             "document_id": "ID of the document",
             "email": "Email address to share with",
@@ -552,12 +588,12 @@ GOOGLE_DOCS_FUNCTIONS = {
     },
     "get_document_comments": {
         "name": "get_document_comments",
-        "description": "Get all comments from a Google Docs document",
+        "description": "Get all comments from a Google Docs document (only documents accessible to app)",
         "parameters": {"document_id": "ID of the document"},
     },
     "get_recent_documents": {
         "name": "get_recent_documents",
-        "description": "Get user's recently modified Google Docs documents",
+        "description": "Get user's recently modified Google Docs documents accessible to this app",
         "parameters": {"max_results": "Maximum number of results (default: 10)"},
     },
 }

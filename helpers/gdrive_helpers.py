@@ -1,9 +1,15 @@
 """
 Google Drive helper functions using Google API Python Client.
 Provides CRUD operations for Google Drive files and folders.
+
+IMPORTANT: This module uses the 'drive.file' OAuth scope (https://www.googleapis.com/auth/drive.file)
+instead of the restricted 'drive' scope. This means the app can only access:
+1. Files created by the app
+2. Files explicitly opened/selected by the user via Google Picker
+
+This is a non-restricted scope that doesn't require security assessment.
 """
 
-import os
 from typing import Dict, List, Any, Optional
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -16,36 +22,34 @@ logger = logging.getLogger(__name__)
 
 
 class GDriveHelpers:
-    """Helper class for Google Drive operations."""
+    """
+    Helper class for Google Drive operations using drive.file scope.
+
+    Scope: https://www.googleapis.com/auth/drive.file
+    - Can create new files
+    - Can only access files created by this app or explicitly selected by user
+    - No verification required (non-restricted scope)
+    """
 
     @staticmethod
-    def _get_service(
-        access_token: str,
-        refresh_token: Optional[str] = None,
-        token_uri: str = "https://oauth2.googleapis.com/token",
-    ):
+    def _get_service(access_token: str):
         """Create Drive API service with access token."""
-        client_id = os.environ.get("GOOGLE_CLIENT_ID")
-        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
-        credentials = Credentials(
-            token=access_token,
-            refresh_token=refresh_token,
-            token_uri=token_uri,
-            client_id=client_id,
-            client_secret=client_secret,
-        )
+        credentials = Credentials(token=access_token)
         return build("drive", "v3", credentials=credentials)
 
     @staticmethod
     async def list_files(
         access_token: str,
-        refresh_token: str,
         query: Optional[str] = None,
         page_size: int = 10,
         order_by: str = "modifiedTime desc",
     ) -> Dict[str, Any]:
         """
-        List Google Drive files.
+        List Google Drive files accessible to this app.
+
+        With drive.file scope, this only returns:
+        - Files created by this app
+        - Files the user has explicitly granted access to via Picker
 
         Args:
             access_token: User's Google Drive access token
@@ -57,12 +61,12 @@ class GDriveHelpers:
             Dict with files list
         """
         try:
-            service = GDriveHelpers._get_service(access_token, refresh_token)
+            service = GDriveHelpers._get_service(access_token)
 
             params = {
                 "pageSize": page_size,
                 "orderBy": order_by,
-                "fields": "files(id, name, mimeType, size, createdTime, modifiedTime)",
+                "fields": "files(id, name, mimeType, size, createdTime, modifiedTime, webViewLink)",
             }
 
             if query:
@@ -80,7 +84,6 @@ class GDriveHelpers:
     @staticmethod
     async def upload_file(
         access_token: str,
-        refresh_token: str,
         file_name: str,
         file_content: bytes,
         mime_type: str,
@@ -89,18 +92,20 @@ class GDriveHelpers:
         """
         Upload a file to Google Drive.
 
+        Files created via this method are automatically accessible with drive.file scope.
+
         Args:
             access_token: User's Google Drive access token
             file_name: Name of the file
             file_content: File content as bytes
             mime_type: MIME type of the file
-            folder_id: Parent folder ID (optional)
+            folder_id: Parent folder ID (optional, must be accessible to app)
 
         Returns:
             Dict with uploaded file data
         """
         try:
-            service = GDriveHelpers._get_service(access_token, refresh_token)
+            service = GDriveHelpers._get_service(access_token)
 
             file_metadata = {"name": file_name}
             if folder_id:
@@ -128,24 +133,23 @@ class GDriveHelpers:
 
     @staticmethod
     async def create_folder(
-        access_token: str,
-        refresh_token: str,
-        folder_name: str,
-        parent_folder_id: Optional[str] = None,
+        access_token: str, folder_name: str, parent_folder_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create a folder in Google Drive.
 
+        Folders created via this method are automatically accessible with drive.file scope.
+
         Args:
             access_token: User's Google Drive access token
             folder_name: Name of the folder
-            parent_folder_id: Parent folder ID (optional)
+            parent_folder_id: Parent folder ID (optional, must be accessible to app)
 
         Returns:
             Dict with created folder data
         """
         try:
-            service = GDriveHelpers._get_service(access_token, refresh_token)
+            service = GDriveHelpers._get_service(access_token)
 
             file_metadata = {
                 "name": folder_name,
@@ -157,7 +161,7 @@ class GDriveHelpers:
 
             folder = (
                 service.files()
-                .create(body=file_metadata, fields="id, name, mimeType")
+                .create(body=file_metadata, fields="id, name, mimeType, webViewLink")
                 .execute()
             )
 
@@ -168,11 +172,12 @@ class GDriveHelpers:
             return {"success": False, "error": str(error)}
 
     @staticmethod
-    async def find_folder(
-        access_token: str, refresh_token: str, folder_name: str
-    ) -> Dict[str, Any]:
+    async def find_folder(access_token: str, folder_name: str) -> Dict[str, Any]:
         """
         Find a folder by name in Google Drive.
+
+        With drive.file scope, this only finds folders created by this app
+        or explicitly granted access to.
 
         Args:
             access_token: User's Google Drive access token
@@ -182,12 +187,12 @@ class GDriveHelpers:
             Dict with folder data or None if not found
         """
         try:
-            service = GDriveHelpers._get_service(access_token, refresh_token)
+            service = GDriveHelpers._get_service(access_token)
 
             query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
             results = (
                 service.files()
-                .list(q=query, fields="files(id, name)", pageSize=1)
+                .list(q=query, fields="files(id, name, webViewLink)", pageSize=1)
                 .execute()
             )
 
@@ -206,6 +211,8 @@ class GDriveHelpers:
     async def delete_file(access_token: str, file_id: str) -> Dict[str, Any]:
         """
         Delete a file from Google Drive.
+
+        Can only delete files created by this app or explicitly granted access to.
 
         Args:
             access_token: User's Google Drive access token
@@ -226,11 +233,11 @@ class GDriveHelpers:
             return {"success": False, "error": str(error)}
 
     @staticmethod
-    async def download_file(
-        access_token: str, refresh_token: str, file_id: str
-    ) -> Dict[str, Any]:
+    async def download_file(access_token: str, file_id: str) -> Dict[str, Any]:
         """
         Download a file from Google Drive.
+
+        Can only download files created by this app or explicitly granted access to.
 
         Args:
             access_token: User's Google Drive access token
@@ -240,7 +247,7 @@ class GDriveHelpers:
             Dict with file content
         """
         try:
-            service = GDriveHelpers._get_service(access_token, refresh_token)
+            service = GDriveHelpers._get_service(access_token)
 
             request = service.files().get_media(fileId=file_id)
             file_content = io.BytesIO()
@@ -258,11 +265,55 @@ class GDriveHelpers:
             return {"success": False, "error": str(error)}
 
     @staticmethod
+    async def share_file(
+        access_token: str, file_id: str, email: str, role: str = "reader"
+    ) -> Dict[str, Any]:
+        """
+        Share a file with another user.
+
+        Can only share files created by this app or explicitly granted access to.
+
+        Args:
+            access_token: User's Google Drive access token
+            file_id: ID of the file to share
+            email: Email address to share with
+            role: Permission role (reader, commenter, writer)
+
+        Returns:
+            Dict with sharing status
+        """
+        try:
+            service = GDriveHelpers._get_service(access_token)
+
+            permission = (
+                service.permissions()
+                .create(
+                    fileId=file_id,
+                    body={"type": "user", "role": role, "emailAddress": email},
+                    fields="id",
+                )
+                .execute()
+            )
+
+            return {
+                "success": True,
+                "permission_id": permission.get("id"),
+                "message": f"File shared with {email} as {role}",
+            }
+
+        except HttpError as error:
+            logger.error(f"Drive API error sharing file: {error}")
+            return {"success": False, "error": str(error)}
+
+    @staticmethod
     async def get_recent_changes(
         access_token: str, days: int = 7, max_results: int = 20
     ) -> Dict[str, Any]:
         """
-        Get recently modified files in Google Drive.
+        Get recently modified files accessible to this app.
+
+        With drive.file scope, only returns files created by app
+        or explicitly granted access to.
 
         Args:
             access_token: User's Google Drive access token
@@ -309,14 +360,20 @@ class GDriveHelpers:
         access_token: str, max_results: int = 20
     ) -> Dict[str, Any]:
         """
-        Get files shared with the user.
+        Get files shared with the user that are accessible to this app.
+
+        NOTE: With drive.file scope, this will only return files that:
+        - Were created by this app, OR
+        - Were explicitly selected by user via Google Picker
+
+        Use Google Picker on frontend to let users grant access to specific files.
 
         Args:
             access_token: User's Google Drive access token
             max_results: Maximum number of files to return
 
         Returns:
-            Dict with shared files
+            Dict with shared files accessible to app
         """
         try:
             query = "sharedWithMe=true and trashed=false"
@@ -343,11 +400,14 @@ class GDriveHelpers:
         access_token: str, file_type: str, max_results: int = 20
     ) -> Dict[str, Any]:
         """
-        Search files by type (documents, spreadsheets, presentations, etc.).
+        Search files by type that are accessible to this app.
+
+        With drive.file scope, only searches files created by app
+        or explicitly granted access to.
 
         Args:
             access_token: User's Google Drive access token
-            file_type: Type of file ('document', 'spreadsheet', 'presentation', 'pdf', 'image')
+            file_type: Type of file ('document', 'spreadsheet', 'presentation', 'pdf', 'image', 'folder')
             max_results: Maximum number of files to return
 
         Returns:
@@ -399,12 +459,44 @@ class GDriveHelpers:
             logger.error(f"Error searching files by type: {error}")
             return {"success": False, "error": str(error)}
 
+    @staticmethod
+    async def get_file_metadata(access_token: str, file_id: str) -> Dict[str, Any]:
+        """
+        Get metadata for a specific file.
+
+        Can only access files created by this app or explicitly granted access to.
+
+        Args:
+            access_token: User's Google Drive access token
+            file_id: ID of the file
+
+        Returns:
+            Dict with file metadata
+        """
+        try:
+            service = GDriveHelpers._get_service(access_token)
+
+            file = (
+                service.files()
+                .get(
+                    fileId=file_id,
+                    fields="id, name, mimeType, size, createdTime, modifiedTime, webViewLink, owners, shared",
+                )
+                .execute()
+            )
+
+            return {"success": True, "file": file}
+
+        except HttpError as error:
+            logger.error(f"Drive API error getting file metadata: {error}")
+            return {"success": False, "error": str(error)}
+
 
 # Function registry for Gemini
 GDRIVE_FUNCTIONS = {
     "list_files": {
         "name": "list_files",
-        "description": "List Google Drive files with optional filters",
+        "description": "List Google Drive files accessible to this app (files created by app or selected by user)",
         "parameters": {
             "query": "Search query (e.g., \"name contains 'report'\", optional)",
             "page_size": "Maximum number of files to return (default: 10)",
@@ -413,40 +505,49 @@ GDRIVE_FUNCTIONS = {
     },
     "upload_file": {
         "name": "upload_file",
-        "description": "Upload a file to Google Drive",
+        "description": "Upload a file to Google Drive (will be accessible to app)",
         "parameters": {
             "file_name": "Name of the file",
             "file_content": "File content as bytes",
             "mime_type": "MIME type of the file",
-            "folder_id": "Parent folder ID (optional)",
+            "folder_id": "Parent folder ID (optional, must be accessible to app)",
         },
     },
     "create_folder": {
         "name": "create_folder",
-        "description": "Create a folder in Google Drive",
+        "description": "Create a folder in Google Drive (will be accessible to app)",
         "parameters": {
             "folder_name": "Name of the folder",
-            "parent_folder_id": "Parent folder ID (optional)",
+            "parent_folder_id": "Parent folder ID (optional, must be accessible to app)",
         },
     },
     "delete_file": {
         "name": "delete_file",
-        "description": "Delete a file from Google Drive",
+        "description": "Delete a file from Google Drive (only files accessible to app)",
         "parameters": {"file_id": "ID of the file to delete"},
     },
     "download_file": {
         "name": "download_file",
-        "description": "Download a file from Google Drive",
+        "description": "Download a file from Google Drive (only files accessible to app)",
         "parameters": {"file_id": "ID of the file to download"},
     },
     "find_folder": {
         "name": "find_folder",
-        "description": "Find a folder by name in Google Drive",
+        "description": "Find a folder by name (only folders accessible to app)",
         "parameters": {"folder_name": "Name of the folder to find"},
+    },
+    "share_file": {
+        "name": "share_file",
+        "description": "Share a file with another user via email (only files accessible to app)",
+        "parameters": {
+            "file_id": "ID of the file to share",
+            "email": "Email address to share with",
+            "role": "Permission role (reader, commenter, writer)",
+        },
     },
     "get_recent_changes": {
         "name": "get_recent_changes",
-        "description": "Get recently modified files in Google Drive",
+        "description": "Get recently modified files accessible to this app",
         "parameters": {
             "days": "Number of days to look back (default: 7)",
             "max_results": "Maximum number of files to return (default: 20)",
@@ -454,17 +555,22 @@ GDRIVE_FUNCTIONS = {
     },
     "get_shared_with_me": {
         "name": "get_shared_with_me",
-        "description": "Get files shared with the user",
+        "description": "Get files shared with user that are accessible to this app",
         "parameters": {
             "max_results": "Maximum number of files to return (default: 20)"
         },
     },
     "search_files_by_type": {
         "name": "search_files_by_type",
-        "description": "Search files by type (document, spreadsheet, presentation, pdf, image, folder)",
+        "description": "Search files by type (document, spreadsheet, presentation, pdf, image, folder) accessible to app",
         "parameters": {
             "file_type": "Type of file to search for",
             "max_results": "Maximum number of files to return (default: 20)",
         },
+    },
+    "get_file_metadata": {
+        "name": "get_file_metadata",
+        "description": "Get detailed metadata for a specific file (only files accessible to app)",
+        "parameters": {"file_id": "ID of the file"},
     },
 }
