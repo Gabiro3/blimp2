@@ -57,6 +57,27 @@ class SupabaseService:
             logger.error(f"Error fetching connected apps: {str(e)}")
             return []
 
+    async def get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a user's profile record"""
+        try:
+            if not self.client:
+                logger.error("Supabase client not initialized")
+                return None
+
+            response = (
+                self.client.table("profiles")
+                .select("*")
+                .eq("id", user_id)
+                .single()
+                .execute()
+            )
+
+            return response.data
+
+        except Exception as e:
+            logger.error(f"Error fetching user profile: {str(e)}")
+            return None
+
     async def get_all_workflow_templates(self) -> List[Dict[str, Any]]:
         """Get all active workflow templates from the database"""
         try:

@@ -173,6 +173,7 @@ class AppChatExecuteResponse(BaseModel):
     resource_urls: List[Dict[str, Any]]
     actions_taken: List[Dict[str, Any]]
     suggested_actions: List[Dict[str, Any]]
+    actionable_insights: Optional[str] = None
     message: str
 
 
@@ -778,6 +779,7 @@ async def app_chat_execute(request: AppChatExecuteRequest):
             resource_urls=result.get("resource_urls", []),
             actions_taken=result.get("actions_taken", []),
             suggested_actions=result.get("suggested_actions", []),
+            actionable_insights=result.get("actionable_insights", "none"),
             message=f"Query executed successfully.{actions_message}",
         )
 
@@ -1147,22 +1149,24 @@ async def execute_team_workflow(request: ExecuteTeamWorkflowRequest):
         }
         if len(app_types) >= 3:
             logger.info(
-                f"Using multi_app_orchestrator for multi-app custom workflow ({len(app_types)} apps)"
+                f"Using multi_app_orchestrator for multi-app team workflow ({len(app_types)} apps)"
             )
             result = await multi_app_orchestrator.execute_multi_app_workflow(
-                workflow=workflow,
+                workflow=workflow_obj,
                 credentials=credentials,
                 parameters=request.parameters or {},
                 user_id=request.user_id,
             )
-
-        # Execute workflow
-        result = await team_orchestrator.execute_workflow(
-            workflow=workflow_obj,
-            credentials=credentials,
-            parameters=request.parameters or {},
-            user_id=request.user_id,
-        )
+        else:
+            logger.info(
+                f"Using team_orchestrator for team workflow ({len(app_types)} apps)"
+            )
+            result = await team_orchestrator.execute_workflow(
+                workflow=workflow_obj,
+                credentials=credentials,
+                parameters=request.parameters or {},
+                user_id=request.user_id,
+            )
 
         status = "completed" if result.get("success") else "failed"
 

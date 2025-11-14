@@ -1,21 +1,6 @@
 # Blimp MCP Server - Setup & Usage Guide
 
 uvicorn main:app --host 127.0.0.1 --port 8000
-curl "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" \
- -H 'Content-Type: application/json' \
- -H 'X-goog-api-key: AIzaSyAMJIPCuQoWkwoGra9snkhJor6Roaq1AwQ' \
- -X POST \
- -d '{
-"contents": [
-{
-"parts": [
-{
-"text": "Explain how AI works in a few words"
-}
-]
-}
-]
-}'
 
 ## Overview
 

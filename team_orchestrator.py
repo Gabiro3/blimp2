@@ -39,6 +39,26 @@ class TeamWorkflowOrchestrator:
             f"Team Orchestrator initialized with {len(self.utils_registry)} utility modules"
         )
 
+    async def execute_workflow(
+        self,
+        workflow: Dict[str, Any],
+        credentials: Dict[str, Any],
+        parameters: Dict[str, Any],
+        user_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Compatibility wrapper so existing callers can trigger team workflows.
+        Delegates to execute_team_workflow using the workflow ID.
+        """
+        workflow_id = workflow.get("id")
+        if not workflow_id:
+            return {"success": False, "error": "Workflow ID is required"}
+
+        admin_id = workflow.get("admin_id", user_id)
+        return await self.execute_team_workflow(
+            workflow_id=workflow_id, admin_id=admin_id, parameters=parameters or {}
+        )
+
     async def execute_team_workflow(
         self, workflow_id: str, admin_id: str, parameters: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -551,7 +571,7 @@ class TeamWorkflowOrchestrator:
 
                     # Send notification email
                     logger.info(f"Sending workflow notification to {recipient_email}")
-                    await self.send_workflow_execution_notification(
+                    await self.email_service.send_workflow_execution_notification(
                         recipient_email=recipient_email,
                         workflow_title=workflow_title,
                         execution_status=execution_status,
@@ -565,7 +585,7 @@ class TeamWorkflowOrchestrator:
                 ]
                 for email in emails:
                     logger.info(f"Sending workflow notification to {email}")
-                    await self.send_workflow_execution_notification(
+                    await self.email_service.send_workflow_execution_notification(
                         recipient_email=email,
                         workflow_title=workflow_title,
                         execution_status=execution_status,
@@ -586,7 +606,7 @@ class TeamWorkflowOrchestrator:
 
                 if admin_email:
                     logger.info(f"Sending admin notification to {admin_email}")
-                    await self.send_workflow_execution_notification(
+                    await self.email_service.send_workflow_execution_notification(
                         recipient_email=admin_email,
                         workflow_title=workflow_title,
                         execution_status=execution_status,

@@ -20,6 +20,7 @@ from helpers.trello_helpers import TRELLO_FUNCTIONS
 from helpers.github_helpers import GITHUB_FUNCTIONS
 
 from services.gemini_service import GeminiService
+from services.supabase_service import SupabaseService
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,10 @@ class AppChatService:
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
         self.gemini_service = GeminiService()
+        self.supabase_service = SupabaseService()
         if self.api_key:
             genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel("gemini-2.0-flash")
+            self.model = genai.GenerativeModel("gemini-2.5-flash")
             logger.info("App Chat service initialized successfully")
         else:
             logger.warning("GEMINI_API_KEY not found in environment variables")
@@ -40,7 +42,7 @@ class AppChatService:
 
     def is_configured(self) -> bool:
         """Check if service is properly configured"""
-        return self.model is not None
+        return self.gemini_service.is_configured()
 
     async def analyze_query(
         self, query: str, inquiry_app: str, connected_apps: List[str], user_id: str
@@ -50,7 +52,7 @@ class AppChatService:
         with automatic detection of the user's timezone for time-specific reasoning.
         """
         try:
-            if not self.model:
+            if not self.gemini_service.is_configured():
                 return {"success": False, "error": "App Chat service not configured"}
 
             # Get available functions for the inquiry app
@@ -70,7 +72,7 @@ class AppChatService:
             try:
                 local_tz = ZoneInfo(user_timezone)
             except Exception:
-                self.logger.warning(
+                logger.warning(
                     f"Invalid timezone '{user_timezone}', falling back to UTC"
                 )
                 local_tz = timezone.utc
@@ -113,26 +115,176 @@ class AppChatService:
     3. Follow all structural and functional instructions from the system prompt.
 
     RESPONSE FORMAT:
-    <your JSON schema as before>
+    IMPORTANT RULES:
+1. If the query is INFORMATIONAL (asking for data), return a data_fetch_plan
+2. If the query is ACTIONABLE (creating, sending, scheduling something), return an actions list
+3. If the query is BOTH (e.g., "check if I'm free, then schedule a meeting"), return BOTH data_fetch_plan AND actions
+4. ONLY use functions that exist in the available_functions registry provided in the system prompt
+5. Ensure ALL required parameters for each function are included
+6. Use proper data types for parameters (strings, numbers, booleans, lists)
+7. If the user does not provide a specific event title or event duration (for Google Calendar events), use their query to generate a title and set the duration to 1 hour as default and if no specific duration was provided.
+8. Be innovative and creative with the slack messages. For example: if a user says to send a welcome message to a certain slack channel, you can come up with welcome messages like 'Welcome everyone!', 'Welcome to the channele guys!' etc. not 'Welcome message' as it.
+
+RESPONSE FORMAT:
+Return a valid JSON object with this EXACT structure:
+
+{{
+    "query_type": "informational" | "actionable" | "conditional",
+    "data_fetch_plan": {{
+        "app": "app_name",
+        "function": "exact_function_name_from_registry",
+        "parameters": {{
+            "param1": "value1",
+            "param2": "value2"
+        }},
+        "description": "what data this will fetch"
+    }},
+    "actions": [
+        {{
+            "type": "action_type",
+            "app": "app_name",
+            "function": "exact_function_name_from_registry",
+            "parameters": {{
+                "param1": "value1"
+            }},
+            "description": "what this action does",
+            "condition": "only include if action is conditional based on fetched data"
+        }}
+    ],
+    "reasoning": "step-by-step explanation of your analysis"
+}}
+
+QUERY TYPE DEFINITIONS:
+- "informational": User is asking for information (e.g., "What emails did I get from John?")
+- "actionable": User wants to create/send/schedule something (e.g., "Schedule a meeting with Sonia tomorrow at 3PM")
+- "conditional": User wants to check something THEN take action (e.g., "Am I free tomorrow 2-4pm? If yes, schedule meeting with Kevin")
+
+EXAMPLES:
+
+Example 1 - Simple Actionable Query:
+User: "Schedule a calendar meeting with Sonia tomorrow 3PM @Google Calendar"
+Response:
+{{
+    "query_type": "actionable",
+    "data_fetch_plan": [],
+    "actions": [
+        {{
+            "type": "create_event",
+            "app": "google_calendar",
+            "function": "create_event",
+            "parameters": {{
+                "summary": "Meeting with Sonia",
+                "start_time": "2025-01-16T15:00:00Z",
+                "end_time": "2025-01-16T16:00:00Z",
+                "attendees": ["sonia@example.com"]
+            }},
+            "description": "Create a calendar event for meeting with Sonia tomorrow at 3PM"
+        }}
+    ],
+    "reasoning": "User explicitly wants to schedule a meeting. This is a pure action request, no data fetching needed. Using create_event function with Sonia as attendee and tomorrow 3PM as time."
+}}
+
+Example 2 - Informational Query:
+User: "Show me emails from Simon about funding"
+Response:
+{{
+    "query_type": "informational",
+    "data_fetch_plan": {{
+        "app": "gmail",
+        "function": "list_messages",
+        "parameters": {{
+            "query": "from:simon subject:funding",
+            "max_results": 10
+        }},
+        "description": "Fetch emails from Simon that contain 'funding' in subject"
+    }},
+    "actions": [],
+    "reasoning": "User is requesting information about existing emails. Using list_messages with Gmail query syntax to filter by sender (from:simon) and subject (subject:funding)."
+}}
+
+Example 3 - Conditional Query (Check Then Act):
+User: "Am I available tomorrow from 2 to 4pm? if yes, schedule a meeting with Kevin @Google Calendar"
+Response:
+{{
+    "query_type": "conditional",
+    "data_fetch_plan": {{
+        "app": "google_calendar",
+        "function": "list_events",
+        "parameters": {{
+            "time_min": "2025-01-16T14:00:00Z",
+            "time_max": "2025-01-16T16:00:00Z",
+            "max_results": 10
+        }},
+        "description": "Check calendar for conflicts between 2-4PM tomorrow"
+    }},
+    "actions": [
+        {{
+            "type": "create_event",
+            "app": "google_calendar",
+            "function": "create_event",
+            "parameters": {{
+                "summary": "Meeting with Kevin",
+                "start_time": "2025-01-16T14:00:00Z",
+                "end_time": "2025-01-16T16:00:00Z",
+                "attendees": ["kevin@example.com"]
+            }},
+            "description": "Create meeting with Kevin if no conflicts found",
+            "condition": "only_if_available"
+        }}
+    ],
+    "reasoning": "User wants to check availability first, then conditionally create a meeting. First, fetch events in the 2-4PM tomorrow timeframe. If no conflicts exist, then create the meeting with Kevin. The orchestrator will handle the conditional logic."
+}}
+
+Example 4 - Send Slack Message:
+User: "Send a message to #engineering saying 'Deploy is ready'"
+Response:
+{{
+    "query_type": "actionable",
+    "data_fetch_plan": [],
+    "actions": [
+        {{
+            "type": "send_message",
+            "app": "slack",
+            "function": "send_message",
+            "parameters": {{
+                "channel": "#engineering",
+                "message": "Deploy is ready"
+            }},
+            "description": "Send message to engineering channel"
+        }}
+    ],
+    "reasoning": "User wants to send a Slack message. This is a direct action with no data fetching required. Using send_message function with channel and message text."
+}}
+
+NOW ANALYZE THE USER'S QUERY AND RESPOND WITH VALID JSON:
     """
 
-            # Call the model
-            response = await self.model.chat(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ]
+            # Call Gemini service for structured JSON response
+            response = self.gemini_service.generate_content(
+                prompt=user_message,
+                system_instruction=system_prompt,
+                temperature=0.3,
+                response_format="json",
             )
 
-            parsed = self._safe_json_parse(response.content)
-            return (
-                {"success": True, **parsed}
-                if parsed
-                else {"success": False, "error": "Invalid response from model"}
-            )
+            if not response.get("success"):
+                return {
+                    "success": False,
+                    "error": response.get("error", "Failed to analyze query"),
+                }
+
+            try:
+                parsed = json.loads(response["content"])
+                return {"success": True, **parsed}
+            except json.JSONDecodeError:
+                logger.error("Invalid JSON returned from Gemini analyze_query response")
+                return {
+                    "success": False,
+                    "error": "Invalid JSON response from Gemini",
+                }
 
         except Exception as e:
-            self.logger.error(f"Error analyzing query: {e}", exc_info=True)
+            logger.error(f"Error analyzing query: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     async def generate_response(
@@ -159,7 +311,7 @@ class AppChatService:
             Dict with AI-generated response
         """
         try:
-            if not self.model:
+            if not self.gemini_service.is_configured():
                 return {"success": False, "error": "App Chat service not configured"}
 
             # Build prompt

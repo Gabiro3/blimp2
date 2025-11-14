@@ -64,17 +64,65 @@ class AppChatOrchestrator:
 
             # Analyze query with Gemini
             analysis_result = await self.app_chat_service.analyze_query(
-                query=query, inquiry_app=inquiry_app, connected_apps=connected_apps
+                query=query,
+                inquiry_app=inquiry_app,
+                connected_apps=connected_apps,
+                user_id=user_id,
             )
 
             if not analysis_result.get("success"):
                 return analysis_result
 
+            # Extract data_fetch_plan and actions
+            data_fetch_plan = analysis_result.get("data_fetch_plan")
+            actions = analysis_result.get("actions", [])
+            
+            # If data_fetch_plan is empty or missing, try to extract from actions
+            if not data_fetch_plan or (isinstance(data_fetch_plan, list) and len(data_fetch_plan) == 0):
+                if actions and len(actions) > 0:
+                    # Extract data fetch plan from the first action
+                    first_action = actions[0]
+                    data_fetch_plan = {
+                        "app": first_action.get("app", inquiry_app.lower()),
+                        "function": first_action.get("function", first_action.get("type", "")),
+                        "parameters": first_action.get("parameters", {}),
+                        "description": first_action.get("description", "Execute action based on user query")
+                    }
+                    logger.info(
+                        f"data_fetch_plan was empty, extracted from actions: {data_fetch_plan}"
+                    )
+                else:
+                    # If no actions either, create a minimal data_fetch_plan for the inquiry app
+                    # This handles edge cases where neither is provided
+                    data_fetch_plan = {
+                        "app": inquiry_app.lower(),
+                        "function": "",
+                        "parameters": {},
+                        "description": "No data fetch required"
+                    }
+                    logger.warning(
+                        f"Both data_fetch_plan and actions are empty for query: {query}"
+                    )
+            elif isinstance(data_fetch_plan, list):
+                # If data_fetch_plan is a list, take the first item
+                if len(data_fetch_plan) > 0:
+                    data_fetch_plan = data_fetch_plan[0]
+                else:
+                    # Empty list, fall back to actions
+                    if actions and len(actions) > 0:
+                        first_action = actions[0]
+                        data_fetch_plan = {
+                            "app": first_action.get("app", inquiry_app.lower()),
+                            "function": first_action.get("function", first_action.get("type", "")),
+                            "parameters": first_action.get("parameters", {}),
+                            "description": first_action.get("description", "Execute action based on user query")
+                        }
+
             return {
                 "success": True,
                 "query_type": analysis_result.get("query_type", "informational"),
-                "data_fetch_plan": analysis_result["data_fetch_plan"],
-                "actions": analysis_result.get("actions", []),
+                "data_fetch_plan": data_fetch_plan,
+                "actions": actions,
                 "reasoning": analysis_result.get("reasoning"),
             }
 
@@ -103,16 +151,26 @@ class AppChatOrchestrator:
             Dict with AI response and execution results
         """
         try:
-            app_name = data_fetch_plan["app"]
-            function_name = data_fetch_plan["function"]
-            if not data_fetch_plan["function"] and actions and len(actions) > 0:
-                function_name = actions[0].get("type")
+            app_name = data_fetch_plan.get("app", "")
+            function_name = data_fetch_plan.get("function", "")
+            
+            # If function is missing, try to get from actions
+            if not function_name and actions and len(actions) > 0:
+                function_name = actions[0].get("function") or actions[0].get("type", "")
                 if not app_name and actions[0].get("app"):
                     app_name = actions[0]["app"]
                 logger.info(
                     f"No function in data_fetch_plan; using fallback from actions: {function_name}"
                 )
+            
             parameters = data_fetch_plan.get("parameters", {})
+            
+            # If parameters are empty but actions have them, use action parameters
+            if not parameters and actions and len(actions) > 0:
+                parameters = actions[0].get("parameters", {})
+                logger.info(
+                    f"No parameters in data_fetch_plan; using from actions: {parameters}"
+                )
 
             # Get and refresh user credentials
             credentials = await self.supabase_service.get_and_refresh_credentials(
@@ -125,13 +183,38 @@ class AppChatOrchestrator:
                     "error": f"No credentials found for {app_name}",
                 }
 
-            # Fetch data from the app
-            fetched_data = await self._fetch_app_data(
-                app_name=app_name,
-                function_name=function_name,
-                parameters=parameters,
-                credentials=credentials,
+            # Check if this is a pure action function (no data fetching needed)
+            action_functions = {
+                "create_event", "update_event", "delete_event",
+                "send_message", "create_draft", "delete_message", "modify_message",
+                "create_document", "append_to_document", "share_document",
+                "create_card", "update_card", "create_issue",
+                "create_folder", "upload_file", "share_file", "delete_file"
+            }
+            
+            is_action_function = function_name.lower() in action_functions or any(
+                action.get("function", "").lower() == function_name.lower() or 
+                action.get("type", "").lower() == function_name.lower()
+                for action in (actions or [])
             )
+            
+            # For pure actionable queries, skip data fetching and go straight to actions
+            if query_type == "actionable" and is_action_function and not function_name.startswith(("list_", "get_", "search_", "find_")):
+                logger.info(
+                    f"Pure actionable query detected ({function_name}), skipping data fetch and executing action directly"
+                )
+                # Set empty fetched data for action execution
+                fetched_data = {"success": True, "data": []}
+                filtered_items = []
+                data_type = "action"
+            else:
+                # Fetch data from the app (normal flow)
+                fetched_data = await self._fetch_app_data(
+                    app_name=app_name,
+                    function_name=function_name,
+                    parameters=parameters,
+                    credentials=credentials,
+                )
 
             if (
                 app_name == "google_docs"
@@ -144,25 +227,50 @@ class AppChatOrchestrator:
                     credentials=credentials,
                 )
 
-            if not fetched_data.get("success"):
-                return {
-                    "success": False,
-                    "error": f"Failed to fetch data: {fetched_data.get('error')}",
-                }
+            # Handle data extraction (only if we actually fetched data)
+            if query_type == "actionable" and is_action_function and not function_name.startswith(("list_", "get_", "search_", "find_")):
+                # Already set above for pure actionable queries
+                pass
+            else:
+                # Normal data fetching flow
+                if not fetched_data.get("success"):
+                    return {
+                        "success": False,
+                        "error": f"Failed to fetch data: {fetched_data.get('error')}",
+                    }
 
-            # Determine data type and extract items
-            data_type, items = self._extract_data_items(app_name, fetched_data)
+                # Determine data type and extract items
+                data_type, items = self._extract_data_items(app_name, fetched_data)
 
-            # Filter sensitive information
-            filtered_items = self.security_filter.filter_data_list(items, data_type)
+                # Filter sensitive information
+                filtered_items = self.security_filter.filter_data_list(items, data_type)
 
-            logger.info(f"Fetched {len(filtered_items)} {data_type}(s) from {app_name}")
+                logger.info(f"Fetched {len(filtered_items)} {data_type}(s) from {app_name}")
 
             # Generate AI response
             action_results = []
+            
+            # For pure actionable queries, ensure we have an action to execute
+            if query_type == "actionable" and is_action_function and (not actions or len(actions) == 0):
+                # Create action from data_fetch_plan if actions list is empty
+                logger.info(
+                    f"Creating action from data_fetch_plan for pure actionable query: {function_name}"
+                )
+                actions = [{
+                    "type": function_name,
+                    "app": app_name,
+                    "function": function_name,
+                    "parameters": parameters,
+                    "description": data_fetch_plan.get("description", f"Execute {function_name}")
+                }]
+            
             if actions:
                 action_results = await self._execute_actions(
-                    user_id=user_id, actions=actions, credentials=credentials
+                    user_id=user_id,
+                    actions=actions,
+                    credentials=credentials,
+                    fetched_data=filtered_items,
+                    query_type=query_type,
                 )
             response_result = await self.app_chat_service.generate_response(
                 query=query,
@@ -192,6 +300,7 @@ class AppChatOrchestrator:
                 "resource_urls": resource_urls,
                 "actions_taken": action_results,
                 "suggested_actions": response_result.get("suggested_actions", []),
+                "actionable_insights": response_result.get("actionable_insights", "none"),
             }
 
         except Exception as e:
@@ -580,7 +689,12 @@ class AppChatOrchestrator:
                     func = getattr(helper, function_name, None)
                     if func:
                         result = await func(
-                            access_token=credentials.get("access_token"), **parameters
+                            access_token=credentials.get("access_token"),
+                            refresh_token=credentials.get("refresh_token"),
+                            token_uri="https://oauth2.googleapis.com/token",
+                            client_id=os.getenv("GOOGLE_CLIENT_ID", ""),
+                            client_secret=os.getenv("GOOGLE_CLIENT_SECRET", ""),
+                            **parameters
                         )
                         results.append(
                             {
@@ -597,6 +711,10 @@ class AppChatOrchestrator:
                     func = getattr(helper, function_name, None)
                     if func:
                         result = await func(
+                            refresh_token=credentials.get("refresh_token"),
+                            token_uri="https://oauth2.googleapis.com/token",
+                            client_id=os.getenv("GOOGLE_CLIENT_ID", ""),
+                            client_secret=os.getenv("GOOGLE_CLIENT_SECRET", ""),
                             access_token=credentials.get("access_token"), **parameters
                         )
                         results.append(
@@ -615,6 +733,10 @@ class AppChatOrchestrator:
                     if func:
                         result = await func(
                             access_token=credentials.get("access_token"),
+                            refresh_token=credentials.get("refresh_token"),
+                            token_uri="https://oauth2.googleapis.com/token",
+                            client_id=os.getenv("GOOGLE_CLIENT_ID", ""),
+                            client_secret=os.getenv("GOOGLE_CLIENT_SECRET", ""),
                             credentials=credentials,
                             **parameters,
                         )
@@ -873,7 +995,7 @@ class AppChatOrchestrator:
                 return {"success": False, "error": "GEMINI_API_KEY not configured"}
 
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-2.0-flash")
+            model = genai.GenerativeModel("gemini-2.5-flash")
 
             prompt = f"""You are a research assistant. Generate comprehensive, well-researched content about the following topic:
 

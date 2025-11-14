@@ -1,0 +1,1242 @@
+{
+  "meta": {
+    "name": "Blimp Automation Backend System Blueprint",
+    "version": "1.0.0",
+    "description": "Comprehensive documentation of the entire backend architecture, workflows, and components",
+    "purpose": "Used by engineers and AI agents to understand, debug, and fix issues in the codebase",
+    "last_updated": "2025-01-14"
+  },
+  "architecture_overview": {
+    "description": "Blimp is an AI-powered workflow automation platform that connects multiple productivity apps and enables users to create, execute, and manage workflows through natural language",
+    "tech_stack": {
+      "backend_framework": "FastAPI (Python)",
+      "ai_service": "Google Gemini 2.0 Flash",
+      "database": "Supabase (PostgreSQL)",
+      "email_service": "Resend",
+      "oauth_providers": "Google, Slack, GitHub, Notion, Trello, Discord"
+    },
+    "core_components": [
+      "FastAPI Main Server (main.py)",
+      "Workflow Orchestrators",
+      "App Chat System",
+      "Helper Functions (per-app)",
+      "Utility Functions (multi-app integrations)",
+      "Services (Gemini, Supabase, Security, Email)"
+    ]
+  },
+  "component_hierarchy": {
+    "description": "How different components interact with each other",
+    "layers": [
+      {
+        "layer": "API Layer",
+        "component": "main.py",
+        "responsibility": "Receives HTTP requests, validates input, routes to appropriate orchestrator",
+        "exposes": [
+          "/api/process-workflow",
+          "/api/execute-workflow",
+          "/api/execute-custom-workflow",
+          "/api/app-chat/prompt",
+          "/api/app-chat/execute",
+          "/api/team-workflows/*"
+        ]
+      },
+      {
+        "layer": "Orchestration Layer",
+        "components": [
+          "orchestrator.py",
+          "app_chat_orchestrator.py",
+          "multi_app_orchestrator.py",
+          "team_orchestrator.py"
+        ],
+        "responsibility": "Coordinates workflow execution, manages data flow between apps, handles business logic",
+        "interacts_with": ["Services", "Helpers", "Utils", "Supabase"]
+      },
+      {
+        "layer": "Service Layer",
+        "components": [
+          "services/gemini_service.py",
+          "services/supabase_service.py",
+          "services/app_chat_service.py",
+          "services/security_filter.py",
+          "services/email_service.py"
+        ],
+        "responsibility": "Provides reusable services for AI, database, security, and email operations",
+        "interacts_with": ["External APIs", "Database", "Orchestrators"]
+      },
+      {
+        "layer": "Integration Layer",
+        "components": [
+          "helpers/* (single-app functions)",
+          "utils/* (multi-app workflows)"
+        ],
+        "responsibility": "Directly interacts with external APIs (Gmail, Slack, etc.) to perform CRUD operations",
+        "interacts_with": ["External OAuth APIs", "Services"]
+      }
+    ],
+    "data_flow": "Client Request → FastAPI → Orchestrator → Service/Helper → External API → Response back through chain"
+  },
+  "services": {
+    "description": "Reusable service modules that provide core functionality",
+    "gemini_service": {
+      "file": "services/gemini_service.py",
+      "purpose": "Provides AI-powered text generation, workflow analysis, and query processing using Google Gemini",
+      "key_features": [
+        "API key rotation (GEMINI_API_KEY_1, GEMINI_API_KEY_2, GEMINI_API_KEY_3)",
+        "Automatic 402 error handling and key switching",
+        "Workflow request processing",
+        "Content generation for research"
+      ],
+      "public_methods": {
+        "generate_content": {
+          "description": "Public method for generating AI content with automatic key rotation",
+          "parameters": ["prompt", "temperature", "response_format"],
+          "returns": "Dict with success status and generated content",
+          "handles_errors": ["402 Resource Exhausted", "API errors"]
+        },
+        "process_workflow_request": {
+          "description": "Analyzes user prompts and determines if workflow exists or needs creation",
+          "parameters": ["prompt", "workflow_templates", "connected_apps", "context"],
+          "returns": "Dict with workflow data and is_new_workflow flag"
+        }
+      },
+      "environment_variables": [
+        "GEMINI_API_KEY",
+        "GEMINI_API_KEY_1",
+        "GEMINI_API_KEY_2",
+        "GEMINI_API_KEY_3"
+      ]
+    },
+    "supabase_service": {
+      "file": "services/supabase_service.py",
+      "purpose": "Handles all database operations including user data, workflows, credentials, and team management",
+      "key_operations": [
+        "Get/save workflow templates",
+        "Get/refresh user credentials (OAuth tokens)",
+        "Manage team workflows and invitations",
+        "Track workflow executions",
+        "Store user connected apps"
+      ],
+      "important_methods": {
+        "get_and_refresh_credentials": {
+          "description": "Fetches and automatically refreshes OAuth tokens if expired",
+          "critical": true,
+          "note": "Always use this before executing workflows to ensure valid credentials"
+        },
+        "get_user_connected_apps": {
+          "description": "Returns list of apps the user has connected",
+          "returns": "List of app names (e.g., ['Gmail', 'Slack', 'Google Calendar'])"
+        }
+      }
+    },
+    "app_chat_service": {
+      "file": "services/app_chat_service.py",
+      "purpose": "Analyzes user queries and generates AI responses for the app chat feature",
+      "key_methods": {
+        "analyze_query": {
+          "description": "Determines query type (informational/actionable/conditional), which app functions to call, and parameters",
+          "input": "User query, inquiry app, connected apps",
+          "output": "Data fetch plan with function name and parameters, plus optional actions",
+          "improved_prompts": "Contains detailed examples and JSON structure guidance to prevent incomplete responses"
+        },
+        "generate_response": {
+          "description": "Creates AI-generated answers from fetched data",
+          "handles": ["Informational queries", "Action confirmations", "Conditional logic results"],
+          "output": "Natural language answer, confidence level, actionable_insights field"
+        }
+      }
+    },
+    "security_filter": {
+      "file": "services/security_filter.py",
+      "purpose": "Filters sensitive information before sending data to AI or external services",
+      "filters": [
+        "Passwords",
+        "API keys",
+        "Access tokens",
+        "Credit card numbers",
+        "SSN",
+        "Private keys"
+      ]
+    },
+    "email_service": {
+      "file": "services/email_service.py",
+      "purpose": "Sends transactional emails using Resend API",
+      "use_cases": ["Team workflow invitations", "Execution notifications"]
+    }
+  },
+  "helpers": {
+    "description": "Single-app helper modules that provide CRUD operations for specific apps",
+    "purpose": "Each helper contains app-specific functions and a FUNCTION_REGISTRY for Gemini",
+    "structure": "Each helper exposes static methods and a {APP}_FUNCTIONS dict for the function registry",
+    "available_helpers": {
+      "gmail_helpers": {
+        "file": "helpers/gmail_helpers.py",
+        "app": "Gmail",
+        "oauth_scope": "https://www.googleapis.com/auth/gmail.modify",
+        "functions": {
+          "list_messages": {
+            "description": "List Gmail messages with optional query filters",
+            "parameters": ["query", "max_results", "label_ids"],
+            "returns": "List of message objects with id, threadId, snippet",
+            "example_query": "is:unread from:john@example.com"
+          },
+          "get_message": {
+            "description": "Get full details of a specific message",
+            "parameters": ["message_id", "format"],
+            "returns": "Complete message with headers, body, attachments"
+          },
+          "send_message": {
+            "description": "Send an email",
+            "parameters": ["to", "subject", "body", "cc", "bcc", "html"],
+            "action_type": "write"
+          },
+          "delete_message": {
+            "description": "Delete a message",
+            "parameters": ["message_id"],
+            "action_type": "write"
+          },
+          "modify_message": {
+            "description": "Modify message labels (mark read/unread, archive)",
+            "parameters": ["message_id", "add_label_ids", "remove_label_ids"],
+            "action_type": "write"
+          },
+          "create_draft": {
+            "description": "Create a draft email",
+            "parameters": ["to", "subject", "body", "html"],
+            "action_type": "write"
+          },
+          "get_attachment": {
+            "description": "Download email attachment",
+            "parameters": ["message_id", "attachment_id"],
+            "returns": "Base64 encoded attachment data"
+          }
+        },
+        "common_use_cases": [
+          "Query unread emails",
+          "Search by sender/subject",
+          "Send quick replies",
+          "Archive old emails",
+          "Download attachments for processing"
+        ]
+      },
+      "gcalendar_helpers": {
+        "file": "helpers/gcalendar_helpers.py",
+        "app": "Google Calendar",
+        "oauth_scope": "https://www.googleapis.com/auth/calendar",
+        "functions": {
+          "list_events": {
+            "description": "List calendar events",
+            "parameters": ["calendar_id", "time_min", "time_max", "max_results", "query"],
+            "returns": "List of event objects"
+          },
+          "create_event": {
+            "description": "Create a calendar event",
+            "parameters": ["summary", "start_time", "end_time", "description", "location", "attendees", "timezone"],
+            "action_type": "write",
+            "note": "start_time and end_time must be ISO 8601 format"
+          },
+          "get_event": {
+            "description": "Get specific event details",
+            "parameters": ["event_id", "calendar_id"]
+          },
+          "update_event": {
+            "description": "Update event details",
+            "parameters": ["event_id", "summary", "start_time", "end_time", "description", "location", "attendees"],
+            "action_type": "write"
+          },
+          "delete_event": {
+            "description": "Delete an event",
+            "parameters": ["event_id", "calendar_id"],
+            "action_type": "write"
+          },
+          "get_upcoming_events": {
+            "description": "Get events for next N days",
+            "parameters": ["days", "max_results", "calendar_id"]
+          },
+          "summarize_weekly_schedule": {
+            "description": "Get organized summary of week's events",
+            "returns": "Events grouped by day"
+          },
+          "get_recent_meetings": {
+            "description": "Get past meetings (events with attendees)",
+            "parameters": ["days", "max_results"]
+          },
+          "get_free_busy_times": {
+            "description": "Check availability / busy times",
+            "parameters": ["days", "calendar_id"],
+            "use_case": "Conditional workflows - check if user is free before scheduling"
+          }
+        },
+        "common_use_cases": [
+          "Check availability before scheduling",
+          "Create meetings with attendees",
+          "Get weekly schedule summary",
+          "Find upcoming events"
+        ]
+      },
+      "gdrive_helpers": {
+        "file": "helpers/gdrive_helpers.py",
+        "app": "Google Drive",
+        "oauth_scope": "https://www.googleapis.com/auth/drive.file (narrower scope)",
+        "scope_limitation": "Can only access files created by this app or explicitly granted via Google Picker",
+        "functions": {
+          "list_files": {
+            "description": "List files in Drive",
+            "parameters": ["query", "max_results", "order_by"],
+            "limitation": "Only returns files created by app"
+          },
+          "create_folder": {
+            "description": "Create a new folder",
+            "parameters": ["folder_name", "parent_folder_id"],
+            "action_type": "write"
+          },
+          "upload_file": {
+            "description": "Upload a file to Drive",
+            "parameters": ["file_name", "file_data", "mime_type", "folder_id"],
+            "action_type": "write"
+          },
+          "share_file": {
+            "description": "Share file with users",
+            "parameters": ["file_id", "email_addresses", "role"],
+            "roles": ["reader", "writer", "commenter"],
+            "action_type": "write"
+          },
+          "get_file": {
+            "description": "Get file metadata",
+            "parameters": ["file_id"]
+          },
+          "download_file": {
+            "description": "Download file content",
+            "parameters": ["file_id"],
+            "returns": "File content as bytes"
+          },
+          "delete_file": {
+            "description": "Delete a file",
+            "parameters": ["file_id"],
+            "action_type": "write"
+          }
+        },
+        "important_notes": [
+          "Uses drive.file scope (not drive.readonly)",
+          "Google Picker required for accessing user's existing files",
+          "Files created by app are always accessible"
+        ]
+      },
+      "google_docs_helpers": {
+        "file": "helpers/google_docs_helpers.py",
+        "app": "Google Docs",
+        "oauth_scope": "https://www.googleapis.com/auth/drive.file + https://www.googleapis.com/auth/documents",
+        "scope_limitation": "Same as Google Drive - can only access docs created by app or granted via Picker",
+        "functions": {
+          "create_document": {
+            "description": "Create a new Google Doc",
+            "parameters": ["title", "content"],
+            "action_type": "write",
+            "special_feature": "Parses markdown to Google Docs formatting (## headers, **bold**)"
+          },
+          "get_document_content": {
+            "description": "Read document content",
+            "parameters": ["document_id"],
+            "returns": "Plain text content"
+          },
+          "append_to_document": {
+            "description": "Add content to end of document",
+            "parameters": ["document_id", "content"],
+            "action_type": "write",
+            "special_feature": "Parses markdown to Google Docs formatting"
+          },
+          "search_documents": {
+            "description": "Search for documents by name",
+            "parameters": ["query", "max_results"],
+            "limitation": "Only searches docs created by app"
+          },
+          "share_document": {
+            "description": "Share doc with users",
+            "parameters": ["document_id", "email_addresses", "role"],
+            "action_type": "write"
+          }
+        },
+        "markdown_parsing": {
+          "description": "Converts markdown syntax to Google Docs API requests",
+          "supported_formats": [
+            "## Main Heading → Heading 1 style",
+            "### Subheading → Heading 2 style",
+            "**bold text** → Bold formatting",
+            "Plain paragraphs → Normal text with line breaks"
+          ],
+          "function": "_parse_markdown_to_requests in google_docs_helpers.py"
+        },
+        "research_generation": {
+          "description": "Special app chat integration for generating research content",
+          "trigger": "User asks to 'research [topic] and insert into Google Docs'",
+          "flow": [
+            "Query detected in app_chat_service.analyze_query",
+            "Returns function: 'generate_and_insert_content'",
+            "app_chat_orchestrator handles via _handle_google_docs_content_generation",
+            "Gemini generates 800-1200 word research with references",
+            "Content parsed from markdown to Google Docs formatting",
+            "Creates new doc or appends to existing doc"
+          ]
+        }
+      },
+      "slack_helpers": {
+        "file": "helpers/slack_helpers.py",
+        "app": "Slack",
+        "functions": ["list_messages", "send_message", "get_channel_info", "list_channels"]
+      },
+      "notion_helpers": {
+        "file": "helpers/notion_helpers.py",
+        "app": "Notion",
+        "functions": ["list_pages", "create_page", "update_page", "query_database"]
+      },
+      "trello_helpers": {
+        "file": "helpers/trello_helpers.py",
+        "app": "Trello",
+        "functions": ["list_boards", "create_card", "update_card", "get_board"]
+      },
+      "github_helpers": {
+        "file": "helpers/github_helpers.py",
+        "app": "GitHub",
+        "functions": ["list_repositories", "create_issue", "get_pull_requests"]
+      },
+      "discord_helpers": {
+        "file": "helpers/discord_helpers.py",
+        "app": "Discord",
+        "functions": ["send_message", "get_channel_messages"]
+      }
+    }
+  },
+  "utils": {
+    "description": "Multi-app utility modules for workflows that combine 2 apps",
+    "purpose": "Each util contains pre-built workflows between two specific apps",
+    "structure": "Utils import helpers and provide high-level workflow functions",
+    "available_utils": {
+      "gmail_calendar_utils": {
+        "file": "utils/gmail_calendar_utils.py",
+        "apps": ["Gmail", "Google Calendar"],
+        "workflow": "emails_to_calendar_events",
+        "description": "Parse emails and create calendar events from meeting requests",
+        "typical_flow": [
+          "List unread emails with query filter",
+          "Extract meeting details (date, time, attendees) using Gemini",
+          "Create calendar events with extracted info",
+          "Mark emails as read"
+        ]
+      },
+      "gmail_gdrive_utils": {
+        "file": "utils/gmail_gdrive_utils.py",
+        "apps": ["Gmail", "Google Drive"],
+        "workflow": "save_attachments_to_drive",
+        "description": "Download email attachments and save to Google Drive folder",
+        "typical_flow": [
+          "List emails with attachments",
+          "Download attachments",
+          "Create Drive folder if needed",
+          "Upload attachments to folder",
+          "Share folder with team if specified"
+        ]
+      },
+      "notion_slack_utils": {
+        "file": "utils/notion_slack_utils.py",
+        "apps": ["Notion", "Slack"],
+        "workflow": "notion_pages_to_slack_messages",
+        "description": "Post Notion page updates to Slack channels",
+        "typical_flow": [
+          "Query Notion database with filters",
+          "Format page content for Slack",
+          "Post messages to specified channel",
+          "Include links back to Notion pages"
+        ]
+      },
+      "notion_gmail_utils": {
+        "file": "utils/notion_gmail_utils.py",
+        "apps": ["Notion", "Gmail"],
+        "workflow": "notion_pages_to_emails"
+      },
+      "notion_discord_utils": {
+        "file": "utils/notion_discord_utils.py",
+        "apps": ["Notion", "Discord"],
+        "workflow": "notion_pages_to_discord_messages"
+      },
+      "gcalendar_slack_utils": {
+        "file": "utils/gcalendar_slack_utils.py",
+        "apps": ["Google Calendar", "Slack"],
+        "workflow": "calendar_events_to_slack_messages"
+      },
+      "github_slack_utils": {
+        "file": "utils/github_slack_utils.py",
+        "apps": ["GitHub", "Slack"],
+        "workflow": "github_updates_to_slack"
+      },
+      "trello_slack_utils": {
+        "file": "utils/trello_slack_utils.py",
+        "apps": ["Trello", "Slack"],
+        "workflow": "trello_cards_to_slack"
+      },
+      "google_docs_gmail_utils": {
+        "file": "utils/google_docs_gmail_utils.py",
+        "apps": ["Google Docs", "Gmail"],
+        "workflow": "docs_to_email"
+      },
+      "google_docs_slack_utils": {
+        "file": "utils/google_docs_slack_utils.py",
+        "apps": ["Google Docs", "Slack"],
+        "workflow": "docs_summary_to_slack"
+      },
+      "google_docs_trello_utils": {
+        "file": "utils/google_docs_trello_utils.py",
+        "apps": ["Google Docs", "Trello"],
+        "workflow": "docs_to_trello_cards"
+      }
+    }
+  },
+  "orchestrators": {
+    "description": "High-level coordinators that manage workflow execution",
+    "workflow_orchestrator": {
+      "file": "orchestrator.py",
+      "purpose": "Handles 2-app workflows using pre-built utils",
+      "triggered_by": "/api/execute-workflow endpoint",
+      "flow": [
+        "Receives workflow definition and credentials",
+        "Refreshes OAuth tokens if user_id provided",
+        "Determines which util module to use based on required_apps",
+        "Initializes util class with credentials",
+        "Executes workflow logic",
+        "Returns success/failure results"
+      ],
+      "supported_combinations": {
+        "gmail_calendar": "GmailCalendarUtils",
+        "gmail_gdrive": "GmailGDriveUtils",
+        "notion_slack": "NotionSlackUtils",
+        "notion_gmail": "NotionGmailUtils",
+        "notion_discord": "NotionDiscordUtils",
+        "gcalendar_slack": "GCalendarSlackUtils"
+      }
+    },
+    "multi_app_orchestrator": {
+      "file": "multi_app_orchestrator.py",
+      "purpose": "Handles complex workflows with 3+ apps using Gemini-guided execution",
+      "triggered_by": "Workflows with 3+ required apps",
+      "key_features": [
+        "Uses Gemini to generate execution plan",
+        "Handles data flow between multiple steps",
+        "Supports conditional logic",
+        "Dynamic function calling"
+      ],
+      "flow": [
+        "Receives workflow with 3+ apps",
+        "Gets available functions from function_registry",
+        "Asks Gemini to create execution plan with step order and parameters",
+        "Executes each step in sequence",
+        "Passes outputs from one step as inputs to next",
+        "Returns combined results"
+      ],
+      "example": "GitHub → Notion → Slack: Monitor repo, create Notion page, notify in Slack"
+    },
+    "app_chat_orchestrator": {
+      "file": "app_chat_orchestrator.py",
+      "purpose": "Coordinates app chat queries - data fetching and AI response generation",
+      "triggered_by": "/api/app-chat/* endpoints",
+      "key_methods": {
+        "process_query": {
+          "description": "Analyzes query and creates data fetch plan",
+          "flow": [
+            "Verify app is connected",
+            "Call app_chat_service.analyze_query",
+            "Returns data_fetch_plan and optional actions"
+          ]
+        },
+        "execute_query": {
+          "description": "Fetches data, performs actions, generates AI response",
+          "flow": [
+            "Get and refresh credentials",
+            "Special handling for Google Docs research queries",
+            "Fetch data using _fetch_app_data",
+            "Execute actions via _execute_actions (supports conditional logic)",
+            "Filter sensitive data",
+            "Generate AI response via app_chat_service.generate_response",
+            "Build resource URLs",
+            "Return formatted answer"
+          ]
+        }
+      },
+      "special_features": {
+        "conditional_actions": {
+          "description": "Executes actions only if conditions are met",
+          "example": "Check calendar availability first, then create meeting only if free",
+          "implementation": "Evaluates fetched_data to determine if action should proceed"
+        },
+        "google_docs_research": {
+          "description": "Generates research content and inserts into Google Docs",
+          "trigger_function": "generate_and_insert_content",
+          "flow": [
+            "User asks to research topic and insert into docs",
+            "Generates 800-1200 word research using Gemini",
+            "Parses markdown to Google Docs formatting",
+            "Creates new doc or appends to existing",
+            "Returns confirmation with doc link"
+          ]
+        }
+      }
+    },
+    "team_orchestrator": {
+      "file": "team_orchestrator.py",
+      "purpose": "Handles team workflow execution with complex filtering",
+      "triggered_by": "/api/team-workflows/execute",
+      "features": [
+        "Executes workflow for all team members",
+        "Applies complex filters (Gmail, Calendar, Slack, Notion, Drive)",
+        "Supports team recipient modes (all members, specific members)",
+        "Sends team notifications"
+      ],
+      "filter_types": {
+        "gmail_filters": ["Sender", "Subject", "Labels", "Date range", "Read/unread", "Has attachment", "File types", "File size"],
+        "calendar_filters": ["Time range", "Calendar ID", "Event visibility", "Attendee notifications"],
+        "slack_filters": ["Channel", "Message templates", "Team notifications"],
+        "notion_filters": ["Database ID", "Page assignment", "Max pages"],
+        "gdrive_filters": ["Team folder", "File sharing", "Access level"]
+      }
+    }
+  },
+  "workflow_types": {
+    "textual_workflows": {
+      "description": "User describes workflow in natural language, Gemini decides if template exists or creates new one",
+      "api_endpoint": "/api/process-workflow",
+      "request_flow": [
+        {
+          "step": 1,
+          "description": "User submits natural language prompt",
+          "example": "When I receive an email from my boss, create a calendar reminder"
+        },
+        {
+          "step": 2,
+          "description": "Backend fetches all workflow templates from Supabase"
+        },
+        {
+          "step": 3,
+          "description": "Gemini analyzes prompt against existing templates",
+          "gemini_decision": "Determines if existing template matches or new workflow needed"
+        },
+        {
+          "step": 4,
+          "description": "Returns workflow_id, name, description, required_apps, is_new_workflow flag"
+        },
+        {
+          "step": 5,
+          "description": "Frontend shows which apps need to be connected"
+        },
+        {
+          "step": 6,
+          "description": "User connects missing apps via OAuth"
+        },
+        {
+          "step": 7,
+          "description": "User executes workflow via /api/execute-workflow"
+        }
+      ],
+      "expected_behavior": {
+        "existing_workflow": "Returns workflow_id of matching template, is_new_workflow=false",
+        "new_workflow": "Creates and saves new workflow, returns new workflow_id, is_new_workflow=true",
+        "missing_apps": "Lists unconnected apps in required_apps with is_connected=false",
+        "all_connected": "Allows immediate execution"
+      },
+      "execution_endpoint": "/api/execute-workflow",
+      "execution_flow": [
+        {
+          "step": 1,
+          "description": "Get workflow details from database"
+        },
+        {
+          "step": 2,
+          "description": "Verify all required apps are connected"
+        },
+        {
+          "step": 3,
+          "description": "Get and refresh user credentials"
+        },
+        {
+          "step": 4,
+          "description": "Pass to appropriate orchestrator based on app count",
+          "routing": {
+            "2_apps": "WorkflowOrchestrator (uses utils)",
+            "3+_apps": "MultiAppOrchestrator (uses Gemini guidance)"
+          }
+        },
+        {
+          "step": 5,
+          "description": "Execute workflow logic"
+        },
+        {
+          "step": 6,
+          "description": "Save execution record to database"
+        },
+        {
+          "step": 7,
+          "description": "Return results to user"
+        }
+      ]
+    },
+    "custom_workflows": {
+      "description": "User creates workflow through drag-and-drop UI builder, executes immediately without Gemini processing",
+      "api_endpoint": "/api/execute-custom-workflow",
+      "request_flow": [
+        {
+          "step": 1,
+          "description": "User builds workflow in UI with steps and app connections"
+        },
+        {
+          "step": 2,
+          "description": "Frontend generates workflow_json with steps array"
+        },
+        {
+          "step": 3,
+          "description": "Backend parses workflow_json to extract app_types"
+        },
+        {
+          "step": 4,
+          "description": "Determines workflow_type based on app combination",
+          "examples": {
+            "gmail + google calendar": "gmail_to_calendar",
+            "gmail + google drive": "gmail_to_gdrive",
+            "notion + slack": "notion_to_slack"
+          }
+        },
+        {
+          "step": 5,
+          "description": "Verifies user has connected required apps"
+        },
+        {
+          "step": 6,
+          "description": "Gets user credentials for all apps"
+        },
+        {
+          "step": 7,
+          "description": "Executes via WorkflowOrchestrator"
+        },
+        {
+          "step": 8,
+          "description": "Returns execution_id, status, results, apps_used"
+        }
+      ],
+      "workflow_json_structure": {
+        "steps": [
+          {
+            "step_number": 1,
+            "app_type": "Gmail",
+            "action": "List messages",
+            "parameters": {}
+          },
+          {
+            "step_number": 2,
+            "app_type": "Google Calendar",
+            "action": "Create event",
+            "parameters": {}
+          }
+        ],
+        "n8n_workflow": "Optional n8n-compatible workflow definition"
+      },
+      "expected_behavior": {
+        "immediate_execution": "No Gemini processing, executes directly",
+        "requires_2_apps_minimum": "Must have at least 2 apps (excluding Trigger)",
+        "supported_combinations": "Must match existing util modules",
+        "unsupported_combination": "Returns error if app combination not supported"
+      }
+    },
+    "team_workflows": {
+      "description": "Admin creates workflow, invites team members, executes for all members with complex filtering",
+      "creation_endpoint": "/api/team-workflows/create",
+      "creation_flow": [
+        {
+          "step": 1,
+          "description": "Admin creates workflow with title, JSON, optional schedule"
+        },
+        {
+          "step": 2,
+          "description": "Workflow saved to Supabase team_workflows table"
+        },
+        {
+          "step": 3,
+          "description": "Returns workflow_id"
+        }
+      ],
+      "invitation_endpoint": "/api/team-workflows/invite",
+      "invitation_flow": [
+        {
+          "step": 1,
+          "description": "Admin provides workflow_id and invitee_emails"
+        },
+        {
+          "step": 2,
+          "description": "Creates invitation records in database"
+        },
+        {
+          "step": 3,
+          "description": "Sends email invitations via Resend"
+        },
+        {
+          "step": 4,
+          "description": "Returns invitations_sent count and failed_invitations list"
+        }
+      ],
+      "acceptance_endpoint": "/api/team-workflows/accept-invitation",
+      "acceptance_flow": [
+        {
+          "step": 1,
+          "description": "User clicks invitation link with invitation_id"
+        },
+        {
+          "step": 2,
+          "description": "Adds user to workflow members"
+        },
+        {
+          "step": 3,
+          "description": "Updates invitation status to 'accepted'"
+        },
+        {
+          "step": 4,
+          "description": "Returns workflow details"
+        }
+      ],
+      "execution_endpoint": "/api/team-workflows/execute",
+      "execution_flow": [
+        {
+          "step": 1,
+          "description": "Verify user is admin or member"
+        },
+        {
+          "step": 2,
+          "description": "Get workflow details and parse steps"
+        },
+        {
+          "step": 3,
+          "description": "Apply complex filters based on parameters",
+          "filter_types": ["Gmail filters", "Calendar filters", "Slack filters", "Notion filters", "Drive filters"]
+        },
+        {
+          "step": 4,
+          "description": "Execute workflow for EACH team member",
+          "parallel": false,
+          "note": "Sequential execution to avoid rate limits"
+        },
+        {
+          "step": 5,
+          "description": "Collect results from all member executions"
+        },
+        {
+          "step": 6,
+          "description": "Send team notifications based on configuration"
+        },
+        {
+          "step": 7,
+          "description": "Return aggregated results"
+        }
+      ],
+      "complex_filters": {
+        "gmail": {
+          "sender_filter": "from:email@example.com",
+          "subject_filter": "subject:keyword",
+          "label_filter": "label:Important",
+          "date_range": "after:2025/01/01 before:2025/12/31",
+          "unread_only": "is:unread",
+          "has_attachment": "has:attachment",
+          "file_type": "filename:pdf",
+          "file_size": "min_file_size_kb, max_file_size_kb"
+        },
+        "calendar": {
+          "time_range": "time_min, time_max (ISO 8601)",
+          "team_calendar": "calendar_id for shared calendar",
+          "visibility": "public, private",
+          "notify_attendees": "send_notifications true/false"
+        }
+      },
+      "expected_behavior": {
+        "admin_creates": "Only admin can create and manage workflow",
+        "member_access": "Members can execute but not modify",
+        "individual_execution": "Each member's personal apps are used",
+        "filter_application": "Same filters applied to all members",
+        "notification_modes": ["all members", "specific members", "admin only"]
+      }
+    },
+    "scheduled_workflows": {
+      "description": "Team workflows can be scheduled to run automatically",
+      "server": "cronjob_server.py",
+      "schedule_types": ["daily", "weekly", "monthly", "custom"],
+      "implementation": "Uses APScheduler to run workflows at specified intervals",
+      "flow": [
+        {
+          "step": 1,
+          "description": "Admin creates team workflow with schedule_type and schedule_config"
+        },
+        {
+          "step": 2,
+          "description": "Cronjob server loads scheduled workflows on startup"
+        },
+        {
+          "step": 3,
+          "description": "APScheduler triggers workflow execution at scheduled time"
+        },
+        {
+          "step": 4,
+          "description": "Executes workflow for all team members"
+        },
+        {
+          "step": 5,
+          "description": "Logs results and sends notifications"
+        }
+      ],
+      "schedule_config_examples": {
+        "daily": {
+          "schedule_type": "daily",
+          "schedule_config": {
+            "time": "09:00"
+          }
+        },
+        "weekly": {
+          "schedule_type": "weekly",
+          "schedule_config": {
+            "day_of_week": "monday",
+            "time": "09:00"
+          }
+        },
+        "custom": {
+          "schedule_type": "custom",
+          "schedule_config": {
+            "cron_expression": "0 9 * * MON"
+          }
+        }
+      }
+    },
+    "app_chat": {
+      "description": "Natural language queries to connected apps with AI-generated responses",
+      "supported_apps": ["Gmail", "Slack", "Google Calendar", "Google Drive", "Trello", "GitHub", "Google Docs"],
+      "query_types": {
+        "informational": {
+          "description": "User asks a question, system fetches data and generates answer",
+          "examples": [
+            "What emails did I receive from John today?",
+            "Do I have any meetings tomorrow?",
+            "Show me recent Slack messages about the project"
+          ],
+          "flow": [
+            "analyze_query determines function to call",
+            "fetch data from app",
+            "filter sensitive information",
+            "generate AI answer",
+            "return answer with resource URLs"
+          ],
+          "actionable_insights": "none"
+        },
+        "actionable": {
+          "description": "User wants to perform an action",
+          "examples": [
+            "Send a Slack message to #engineering saying 'Deploy is complete'",
+            "Schedule a meeting with Sarah tomorrow at 3pm",
+            "Create a Google Drive folder called 'Q1 Reports'"
+          ],
+          "flow": [
+            "analyze_query identifies action and parameters",
+            "execute action via helper function",
+            "generate confirmation message",
+            "return confirmation"
+          ],
+          "actionable_insights": "action_completed",
+          "confirmation_format": "Meeting scheduled successfully with Sarah at 3pm tomorrow @Google Calendar"
+        },
+        "conditional": {
+          "description": "User wants to check a condition and then perform an action",
+          "examples": [
+            "Am I available tomorrow 2-4pm? If yes, schedule a meeting with Kevin",
+            "Check if I have any unread emails from the CEO, if yes, send me a Slack reminder"
+          ],
+          "flow": [
+            "analyze_query identifies condition and conditional action",
+            "fetch data to evaluate condition (e.g., check calendar)",
+            "evaluate condition (conflicts found or not)",
+            "if condition true: execute action",
+            "if condition false: skip action with reason",
+            "generate response explaining outcome"
+          ],
+          "action_condition_field": "only_if_available",
+          "expected_behavior": {
+            "user_available": "Creates meeting, returns confirmation",
+            "user_not_available": "Skips meeting creation, returns reason (conflicts found)"
+          }
+        }
+      },
+      "prompt_endpoint": "/api/app-chat/prompt",
+      "prompt_flow": [
+        {
+          "step": 1,
+          "description": "User submits query with inquiry_app (gmail, slack, gcalendar, etc.)"
+        },
+        {
+          "step": 2,
+          "description": "Verify app is connected"
+        },
+        {
+          "step": 3,
+          "description": "Call app_chat_service.analyze_query",
+          "gemini_task": "Determine query_type, function to call, parameters, and optional actions"
+        },
+        {
+          "step": 4,
+          "description": "Return data_fetch_plan and actions to frontend"
+        }
+      ],
+      "execute_endpoint": "/api/app-chat/execute",
+      "execute_flow": [
+        {
+          "step": 1,
+          "description": "Get and refresh user credentials"
+        },
+        {
+          "step": 2,
+          "description": "Check for special handlers (e.g., Google Docs research)",
+          "special_case": "generate_and_insert_content function triggers research workflow"
+        },
+        {
+          "step": 3,
+          "description": "Fetch data using _fetch_app_data method",
+          "details": "Calls appropriate helper function with parameters"
+        },
+        {
+          "step": 4,
+          "description": "Extract and filter data items",
+          "security": "Remove sensitive info like passwords, API keys"
+        },
+        {
+          "step": 5,
+          "description": "Execute actions if provided",
+          "conditional_check": "If query_type is 'conditional', evaluate fetched_data before action"
+        },
+        {
+          "step": 6,
+          "description": "Generate AI response using app_chat_service.generate_response",
+          "includes": "Natural language answer, confidence level, actionable_insights"
+        },
+        {
+          "step": 7,
+          "description": "Build resource URLs for direct access to items"
+        },
+        {
+          "step": 8,
+          "description": "Return formatted response with markdown and HTML versions"
+        }
+      ],
+      "query_analysis_improvements": {
+        "problem_solved": "Gemini was returning incomplete JSON or non-existent functions",
+        "solution": "Enhanced prompts with detailed examples and explicit JSON structure",
+        "key_improvements": [
+          "Shows exact JSON format expected",
+          "Provides examples for each query type",
+          "Lists all available functions with descriptions",
+          "Specifies how to handle conditional queries",
+          "Includes parameter examples"
+        ]
+      },
+      "response_generation_improvements": {
+        "problem_solved": "Responses didn't properly handle actions or confirm completions",
+        "solution": "Adaptive prompts that detect query type and format accordingly",
+        "key_improvements": [
+          "Informational queries: Generate detailed answers from data",
+          "Actionable queries: Confirm action completion with specific details",
+          "Conditional queries: Explain condition result and action taken/skipped",
+          "actionable_insights field: 'action_completed' for UI rendering"
+        ]
+      },
+      "google_docs_research_integration": {
+        "trigger": "User query like 'Research [topic] and insert into Google Docs'",
+        "special_function": "generate_and_insert_content",
+        "flow": [
+          "analyze_query detects research request",
+          "execute_query calls _handle_google_docs_content_generation",
+          "Gemini generates 800-1200 word research with references",
+          "Content parsed from markdown to Google Docs formatting",
+          "Creates new doc or appends to existing (based on parameters)",
+          "Returns document link and confirmation"
+        ],
+        "parameters": {
+          "research_topic": "The topic to research",
+          "action": "create_new or append_to_existing",
+          "document_title": "Title for new document",
+          "document_name": "Name of existing document to append to"
+        }
+      },
+      "expected_behaviors": {
+        "informational_query": {
+          "user_query": "What emails did I receive from Simon?",
+          "expected_response": "Detailed answer listing emails with subjects, dates, snippets",
+          "includes": ["relevant_items", "resource_urls to emails", "confidence level"]
+        },
+        "actionable_query": {
+          "user_query": "Schedule a meeting with Sonia tomorrow at 3pm @Google Calendar",
+          "expected_response": "Meeting scheduled successfully with Sonia at 3pm tomorrow @Google Calendar",
+          "includes": ["actionable_insights: 'action_completed'", "event details", "calendar link"]
+        },
+        "conditional_query_available": {
+          "user_query": "Am I free tomorrow 2-4pm? If yes, schedule meeting with Kevin",
+          "fetched_data": "No calendar events found (user is free)",
+          "expected_response": "You are available tomorrow from 2-4pm. I've scheduled a meeting with Kevin during that time.",
+          "includes": ["Meeting created", "Calendar link", "actionable_insights: 'action_completed'"]
+        },
+        "conditional_query_not_available": {
+          "user_query": "Am I free tomorrow 2-4pm? If yes, schedule meeting with Kevin",
+          "fetched_data": "2 calendar events found (conflicts)",
+          "expected_response": "You have conflicts during tomorrow 2-4pm (Team Standup, Client Call). I did not schedule the meeting with Kevin.",
+          "includes": ["List of conflicts", "Action skipped", "actionable_insights: 'condition_not_met'"]
+        },
+        "research_query": {
+          "user_query": "Do research about 9-to-5 workweek and insert into Google Docs",
+          "expected_response": "I've created a new document titled 'Research: 9-to-5 Workweek' with comprehensive research including historical context, current trends, and references.",
+          "includes": ["Document ID", "Web link to doc", "Content preview", "Word count"]
+        }
+      }
+    }
+  },
+  "function_registry": {
+    "file": "function_registry.py",
+    "purpose": "Central registry of all available functions across all apps",
+    "structure": {
+      "FUNCTION_REGISTRY": {
+        "gmail": "GMAIL_FUNCTIONS from gmail_helpers",
+        "gcalendar": "GCALENDAR_FUNCTIONS from gcalendar_helpers",
+        "gdrive": "GDRIVE_FUNCTIONS from gdrive_helpers",
+        "notion": "NOTION_FUNCTIONS from notion_helpers",
+        "slack": "SLACK_FUNCTIONS from slack_helpers",
+        "discord": "DISCORD_FUNCTIONS from discord_helpers",
+        "trello": "TRELLO_FUNCTIONS from trello_helpers",
+        "github": "GITHUB_FUNCTIONS from github_helpers",
+        "google_docs": "GOOGLE_DOCS_FUNCTIONS from google_docs_helpers"
+      }
+    },
+    "usage": "get_functions_for_apps(app_names) returns functions for specified apps",
+    "consumed_by": [
+      "MultiAppOrchestrator - for 3+ app workflows",
+      "GeminiService - for workflow analysis",
+      "AppChatService - for query analysis"
+    ]
+  },
+  "common_issues_and_fixes": {
+    "issue_1_incomplete_json_from_gemini": {
+      "symptom": "Gemini returns incomplete JSON or missing function calls",
+      "cause": "Ambiguous prompts, unclear structure expectations",
+      "fix": "Enhanced analyze_query prompts with explicit JSON structure and detailed examples",
+      "location": "services/app_chat_service.py - analyze_query method"
+    },
+    "issue_2_nonexistent_functions": {
+      "symptom": "Gemini suggests functions that don't exist in helper modules",
+      "cause": "Gemini doesn't know available functions",
+      "fix": "Include function registry in prompts with full function descriptions",
+      "location": "services/app_chat_service.py - _get_app_functions method"
+    },
+    "issue_3_google_docs_markdown_rendering": {
+      "symptom": "Google Docs shows ** and ## instead of formatted text",
+      "cause": "Markdown not being converted to Google Docs API formatting",
+      "fix": "Added _parse_markdown_to_requests function to convert markdown to API requests",
+      "location": "helpers/google_docs_helpers.py"
+    },
+    "issue_4_gemini_api_402_errors": {
+      "symptom": "Gemini API returns 402 Resource Exhausted",
+      "cause": "Single API key hitting quota limit",
+      "fix": "Implemented API key rotation with GEMINI_API_KEY_1, _2, _3",
+      "location": "services/gemini_service.py - _make_api_call_with_retry"
+    },
+    "issue_5_conditional_actions_not_working": {
+      "symptom": "Actions execute even when conditions aren't met",
+      "cause": "No condition evaluation logic in action execution",
+      "fix": "Added conditional check in _execute_actions that evaluates fetched_data before proceeding",
+      "location": "app_chat_orchestrator.py - _execute_actions method"
+    },
+    "issue_6_oauth_token_expiration": {
+      "symptom": "401 Unauthorized errors when calling app APIs",
+      "cause": "Access tokens expired",
+      "fix": "Always call get_and_refresh_credentials before API calls",
+      "location": "services/supabase_service.py - get_and_refresh_credentials"
+    },
+    "issue_7_google_drive_scope_restrictions": {
+      "symptom": "Can't access user's existing Drive files",
+      "cause": "Using drive.file scope instead of drive.readonly",
+      "fix": "Documented that Google Picker is required for accessing existing files, updated helpers to note scope limitations",
+      "location": "helpers/gdrive_helpers.py, helpers/google_docs_helpers.py, OAUTH_MIGRATION_GUIDE.md"
+    }
+  },
+  "debugging_guide": {
+    "checking_workflow_execution": {
+      "logs_to_check": [
+        "orchestrator - INFO - Executing workflow: {workflow_name}",
+        "orchestrator - INFO - Required apps: {required_apps}",
+        "orchestrator - INFO - Using refreshed credentials"
+      ],
+      "common_failures": [
+        "No utility module found for apps - check utils_registry in orchestrator",
+        "Missing credentials - verify user has connected apps",
+        "Function not found - check helper class has the method"
+      ]
+    },
+    "checking_app_chat_execution": {
+      "logs_to_check": [
+        "app_chat_orchestrator - INFO - Processing query for user {user_id}",
+        "app_chat_orchestrator - INFO - Fetched {count} {type}(s) from {app}",
+        "app_chat_orchestrator - INFO - Executing step: {app}.{function}"
+      ],
+      "common_failures": [
+        "Fetched 0 documents - function returned empty, check helper implementation",
+        "No credentials found - user needs to reconnect app",
+        "Action skipped: condition not met - expected for conditional queries"
+      ]
+    },
+    "gemini_service_debugging": {
+      "logs_to_check": [
+        "gemini_service - INFO - Using API key index: {index}",
+        "gemini_service - WARNING - 402 error, rotating to next key",
+        "gemini_service - INFO - Generated {length} characters of research content"
+      ],
+      "common_failures": [
+        "All API keys exhausted - wait for quota reset or add more keys",
+        "Invalid response format - check if Gemini returned valid JSON"
+      ]
+    }
+  },
+  "environment_variables": {
+    "required": [
+      "SUPABASE_URL",
+      "SUPABASE_KEY",
+      "GEMINI_API_KEY"
+    ],
+    "optional": [
+      "GEMINI_API_KEY_1 (for rotation)",
+      "GEMINI_API_KEY_2 (for rotation)",
+      "GEMINI_API_KEY_3 (for rotation)",
+      "RESEND_API_KEY (for team invitations)",
+      "FRONTEND_URL (for invitation links)"
+    ]
+  },
+  "testing_checklist": {
+    "workflow_execution": [
+      "Test 2-app workflow (Gmail to Calendar)",
+      "Test 3+ app workflow",
+      "Test with expired OAuth tokens",
+      "Test with disconnected apps",
+      "Test workflow with no matching template"
+    ],
+    "app_chat": [
+      "Test informational query (list emails)",
+      "Test actionable query (send message)",
+      "Test conditional query (check availability then create meeting)",
+      "Test Google Docs research integration",
+      "Test with app not connected",
+      "Test with no data found"
+    ],
+    "team_workflows": [
+      "Test workflow creation",
+      "Test member invitations",
+      "Test invitation acceptance",
+      "Test execution for all members",
+      "Test complex filters"
+    ],
+    "api_key_rotation": [
+      "Test Gemini with single key",
+      "Test 402 error triggers rotation",
+      "Test all keys exhausted scenario"
+    ]
+  }
+}
