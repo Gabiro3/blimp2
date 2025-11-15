@@ -302,9 +302,16 @@ async def process_workflow(request: ProcessWorkflowRequest):
         required_apps_list = workflow_data["required_apps"]
         logger.info(f"Required apps: {required_apps_list}")
 
+        # Normalize connected apps to lowercase
+        connected_apps_normalized = {a.lower() for a in connected_apps}
+
+        # Normalize required apps when comparing
         required_apps_with_status = [
-            {"app_name": app, "is_connected": app in connected_apps}
-            for app in required_apps_list
+        {
+        "app_name": app,
+        "is_connected": app.lower() in connected_apps_normalized
+        }
+        for app in required_apps_list
         ]
 
         logger.info(f"Required apps with status: {required_apps_with_status}")

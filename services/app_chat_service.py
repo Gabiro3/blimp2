@@ -665,28 +665,49 @@ Example Response:
         elif inquiry_app.lower() == "github":
             app_specific = """
 GITHUB-SPECIFIC INSTRUCTIONS:
-1. Use 'list_repos' to fetch user's repositories
-2. Use 'get_issues' to fetch issues within a repository
-3. Use 'get_issue_details' to get detailed information about an issue
+1. Use 'list_repositories' to fetch user's repositories
+2. Use 'list_issues' to fetch issues within a repository
+3. Use 'list_pull_requests' to fetch pull requests in a repository
 4. Use 'search_issues' to search for issues by query
-5. IMPORTANT: Include repository name, issue title, issue ID, and issue details in results
+5. Use 'get_recent_push' to get the most recent commit/push to a repository branch
+6. Use 'check_all_prs_merged' to check if all pull requests have been merged
+7. Use 'find_pr_by_title' to find pull request(s) by title (supports partial matching)
+8. Use 'get_pr_comments' to get comments for a pull request (can find PR by number or title)
+9. IMPORTANT: Include repository name (owner/repo format), issue/PR title, IDs, and details in results
 
 Common Query Patterns:
-- "List all repositories" → list_repos()
-- "Issues in [repo]" → get_issues(repo_name="repo_name")
-- "Details of issue [number]" → get_issue_details(repo_name="repo_name", issue_number=1)
-- "Search for [topic]" → search_issues(query="topic")
+- "List all repositories" → list_repositories(per_page=20)
+- "Issues in [repo]" → list_issues(repo="owner/repo", state="all", per_page=10)
+- "Pull requests in [repo]" → list_pull_requests(repo="owner/repo", state="all", per_page=10)
+- "Search for [topic]" → search_issues(query="topic", per_page=10)
+- "Most recent push to [repo]" → get_recent_push(repo="owner/repo", branch="main")
+- "Are all PRs merged in [repo]?" → check_all_prs_merged(repo="owner/repo", state="all")
+- "Find PR titled [title]" → find_pr_by_title(repo="owner/repo", title="PR title", state="all")
+- "Comments on PR [title]" → get_pr_comments(repo="owner/repo", pr_title="PR title")
+- "Comments on PR #[number]" → get_pr_comments(repo="owner/repo", pr_number=123)
 
-Example Response:
+Example Response for Recent Push:
 {{
     "data_fetch_plan": {{
         "app": "github",
-        "function": "search_issues",
-        "parameters": {{"query": "funding round"}},
-        "description": "Search for issues related to funding round"
+        "function": "get_recent_push",
+        "parameters": {{"repo": "owner/repo", "branch": "main"}},
+        "description": "Get the most recent push to the repository"
     }},
     "actions": [],
-    "reasoning": "User wants to find GitHub issues about funding, so we'll search with relevant keywords"
+    "reasoning": "User wants to know the most recent push, so we'll fetch the latest commit"
+}}
+
+Example Response for PR Comments:
+{{
+    "data_fetch_plan": {{
+        "app": "github",
+        "function": "get_pr_comments",
+        "parameters": {{"repo": "owner/repo", "pr_title": "Add new feature"}},
+        "description": "Get comments for the pull request with title 'Add new feature'"
+    }},
+    "actions": [],
+    "reasoning": "User wants to see comments on a specific PR, so we'll find it by title and get comments"
 }}
 """
         else:
@@ -962,48 +983,75 @@ Example Response:
                 + """
 
 GITHUB RESPONSE INSTRUCTIONS:
-1. ALWAYS include detailed issue information:
-   - Issue title
-   - Repository name
-   - Issue ID
-   - Issue description
-   - Labels
-   - Assignees
-   - Created date
-   - Updated date
+1. ALWAYS include detailed information based on the query type:
+   - For issues: title, repository, ID, description, labels, assignees, dates
+   - For pull requests: title, repository, number, state, merged status, author, dates
+   - For commits: message, author, date, SHA, repository, branch
+   - For comments: user, body, date, type (comment/review), PR number
+   - For merge status: total PRs, merged count, open count, unmerged PRs list
 
-2. For each relevant issue in relevant_items, include:
-   - "id": Issue ID
-   - "summary": Issue title and brief description
-   - "repo": Repository name
-   - "description": Issue description
-   - "labels": List of labels
-   - "assignees": List of assignees
-   - "created": Created date
-   - "updated": Updated date
+2. For each relevant item in relevant_items, include:
+   - "id": Item ID (issue ID, PR number, commit SHA, comment ID)
+   - "summary": Title/description summary
+   - "repo": Repository name (owner/repo format)
+   - Additional fields based on item type
 
 3. Answer format:
    - Direct answer to the query
-   - List issues with full details
+   - List items with full details
    - Include context about what was found
+   - For merge status queries, clearly state if all PRs are merged or list unmerged ones
 
-4. If no issues match: Clearly state no matching issues were found
+4. If no items match: Clearly state no matching items were found
 
-Example Response:
+Example Response for Recent Push:
 {
-    "answer": "You have 1 issue related to the funding round in the 'Product' repository. It's titled 'Investor Meeting Preparation' and is due next week.",
+    "answer": "The most recent push to the 'myrepo' repository (main branch) was made by John Doe on January 15, 2024. The commit message was 'Fix authentication bug' (SHA: abc123).",
     "confidence": "high",
     "data_found": true,
     "relevant_items": [
         {
-            "id": "issue456",
-            "summary": "Investor Meeting Preparation",
-            "repo": "Product",
-            "description": "Prepare for the upcoming investor meeting regarding Series A funding",
-            "labels": ["funding", "meeting"],
-            "assignees": ["john.doe"],
-            "created": "2024-01-10",
-            "updated": "2024-01-15"
+            "id": "abc123",
+            "summary": "Fix authentication bug",
+            "repo": "owner/myrepo",
+            "author": "John Doe",
+            "date": "2024-01-15T10:30:00Z"
+        }
+    ]
+}
+
+Example Response for PR Merge Status:
+{
+    "answer": "In the 'myrepo' repository, not all pull requests are merged. You have 5 total PRs: 3 merged, 1 open, and 1 closed but not merged. The open PR is #42 titled 'Add new feature'.",
+    "confidence": "high",
+    "data_found": true,
+    "relevant_items": [
+        {
+            "id": "merge_status",
+            "summary": "PR Merge Status for myrepo",
+            "repo": "owner/myrepo",
+            "all_merged": false,
+            "total_prs": 5,
+            "merged_count": 3,
+            "open_count": 1
+        }
+    ]
+}
+
+Example Response for PR Comments:
+{
+    "answer": "The pull request 'Add new feature' (#42) has 3 comments. The most recent comment was from Sarah on January 14, asking about test coverage. There's also a review comment from John requesting changes.",
+    "confidence": "high",
+    "data_found": true,
+    "relevant_items": [
+        {
+            "id": "comment123",
+            "summary": "Comment by Sarah on PR #42",
+            "repo": "owner/myrepo",
+            "pr_number": 42,
+            "user": "sarah",
+            "body": "Can you add test coverage for this?",
+            "type": "comment"
         }
     ]
 }

@@ -539,8 +539,30 @@ class AppChatOrchestrator:
             return "board", boards
 
         elif app_name.lower() == "github":
-            repositories = fetched_data.get("repositories", [])
-            return "repository", repositories
+            # Handle different GitHub response types
+            if "repositories" in fetched_data:
+                repositories = fetched_data.get("repositories", [])
+                return "repository", repositories
+            elif "commit" in fetched_data:
+                # get_recent_push returns a single commit
+                commit = fetched_data.get("commit")
+                return "commit", [commit] if commit else []
+            elif "pull_requests" in fetched_data:
+                # find_pr_by_title returns pull_requests
+                pull_requests = fetched_data.get("pull_requests", [])
+                return "pull_request", pull_requests
+            elif "comments" in fetched_data:
+                # get_pr_comments returns comments
+                comments = fetched_data.get("comments", [])
+                return "comment", comments
+            elif "all_merged" in fetched_data:
+                # check_all_prs_merged returns merge status
+                # Return the entire response as it contains summary info
+                return "merge_status", [fetched_data]
+            else:
+                # Fallback for other GitHub responses
+                repositories = fetched_data.get("repositories", [])
+                return "repository", repositories
 
         return "unknown", []
 
